@@ -1,8 +1,35 @@
 {
-  "name": "capsule",
+  "name": "@alicankorkmaz/capsule",
   "version": "0.1.0",
-  "private": true,
   "description": "Profile-based capability manager for Claude Code and Codex",
+  "license": "MIT",
+  "author": "Alican Korkmaz",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/alicankorkmaz/capsule.git"
+  },
+  "homepage": "https://github.com/alicankorkmaz/capsule#readme",
+  "bugs": {
+    "url": "https://github.com/alicankorkmaz/capsule/issues"
+  },
+  "keywords": [
+    "claude-code",
+    "codex",
+    "mcp",
+    "cli",
+    "profiles"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
   "bin": {
     "caps": "dist/server/cli/index.js",
     "cx": "dist/server/profileCli.js"
@@ -14,7 +41,8 @@
     "build:client": "vite build",
     "start": "node dist/server/index.js",
     "test": "vitest run",
-    "typecheck": "tsc -p tsconfig.server.json --noEmit && tsc -p tsconfig.client.json --noEmit"
+    "typecheck": "tsc -p tsconfig.server.json --noEmit && tsc -p tsconfig.client.json --noEmit",
+    "prepublishOnly": "npm run typecheck && npm test && npm run build"
   },
   "dependencies": {
     "@fastify/static": "^10.1.0",

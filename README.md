@@ -1,5 +1,7 @@
 # Capsule
 
+[![CI](https://github.com/alicankorkmaz/capsule/actions/workflows/ci.yml/badge.svg)](https://github.com/alicankorkmaz/capsule/actions/workflows/ci.yml)
+
 Profile-based capability manager for Claude Code and Codex.
 
 Claude Code configuration is spread across several files, and every project wants a
@@ -35,10 +37,20 @@ Capabilities are written into six config targets, each detected and validated se
 ## Install
 
 ```bash
+npm install -g @alicankorkmaz/capsule
+```
+
+Or from source:
+
+```bash
+git clone https://github.com/alicankorkmaz/capsule.git
+cd capsule
 npm install
 npm run build
 npm link          # installs the `caps` and `cx` binaries
 ```
+
+Requires Node 20 or newer.
 
 ## Usage
 
@@ -108,3 +120,7 @@ npm run build
 Note on naming: `mcp` throughout the code refers to the Model Context Protocol, not to
 this tool. `McpManager` is the class that reads and writes MCP server entries across
 targets, alongside `ProfileManager`.
+
+## License
+
+MIT — see [LICENSE](LICENSE).
