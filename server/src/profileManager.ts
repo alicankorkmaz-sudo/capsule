@@ -390,10 +390,12 @@ export class ProfileManager {
             throw new Error(`Installed plugin is missing: ${item.pluginId}`);
           }
           pluginDirs.push(item.installPath);
+          await mergeBundledMcpServers(item.installPath, item.name, mcpServers, warnings);
           break;
         case "custom-plugin":
           await this.assertCustomPluginPath(item.rootPath);
           pluginDirs.push(item.rootPath);
+          await mergeBundledMcpServers(item.rootPath, item.name, mcpServers, warnings);
           break;
         case "skill":
           skills.push(item);
@@ -1181,6 +1183,51 @@ function unique<T>(values: T[]): T[] {
 
 function hash(value: string): string {
   return createHash("sha256").update(value).digest("hex");
+}
+
+/**
+ * Merge a plugin's bundled `.mcp.json` servers into the compiled MCP config.
+ *
+ * Plugins ship their own servers, but Capsule launches with `--strict-mcp-config`,
+ * which makes Claude Code ignore every MCP source except the one we hand it. Without
+ * this merge the plugin's agents and skills load while its servers are silently
+ * dropped, so its tools never surface. `${CLAUDE_PLUGIN_ROOT}` is expanded here
+ * because that substitution is normally done by the plugin loader we bypass.
+ */
+async function mergeBundledMcpServers(
+  pluginRoot: string,
+  pluginName: string,
+  mcpServers: Record<string, Record<string, unknown>>,
+  warnings: string[]
+): Promise<void> {
+  const manifestPath = path.join(pluginRoot, ".mcp.json");
+  type McpManifest = { mcpServers?: Record<string, unknown> };
+  const manifest = await readJsonFile<McpManifest>(manifestPath, {}).catch<McpManifest>(() => ({}));
+  const bundled = manifest.mcpServers;
+  if (!bundled || typeof bundled !== "object") return;
+
+  for (const [name, rawConfig] of Object.entries(bundled)) {
+    if (!rawConfig || typeof rawConfig !== "object") continue;
+    if (mcpServers[name]) {
+      warnings.push(
+        `Plugin "${pluginName}" bundles an MCP server named "${name}", which is already defined by another ` +
+          `capability. Kept the existing one.`
+      );
+      continue;
+    }
+    mcpServers[name] = expandPluginRoot(rawConfig, pluginRoot) as Record<string, unknown>;
+  }
+}
+
+function expandPluginRoot(value: unknown, pluginRoot: string): unknown {
+  if (typeof value === "string") return value.split("${CLAUDE_PLUGIN_ROOT}").join(pluginRoot);
+  if (Array.isArray(value)) return value.map((entry) => expandPluginRoot(entry, pluginRoot));
+  if (value && typeof value === "object") {
+    return Object.fromEntries(
+      Object.entries(value).map(([key, entry]) => [key, expandPluginRoot(entry, pluginRoot)])
+    );
+  }
+  return value;
 }
 
 function projectSettingsPath(projectPath: string): string {

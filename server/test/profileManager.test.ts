@@ -161,6 +161,64 @@ describe("ProfileManager", () => {
     expect(vanilla.args).toEqual(["--safe-mode"]);
   });
 
+  it("passes a plugin's bundled MCP servers through --strict-mcp-config", async () => {
+    const env = await makeTempEnv();
+    const manager = new ProfileManager(env.ctx);
+    const installPath = path.join(env.root, "plugins", "factory");
+    await fs.mkdir(installPath, { recursive: true });
+    await fs.writeFile(
+      path.join(installPath, ".mcp.json"),
+      JSON.stringify({
+        mcpServers: {
+          "factory-gitlab": { command: "node", args: ["${CLAUDE_PLUGIN_ROOT}/servers/gitlab/server.mjs"] }
+        }
+      })
+    );
+    const plugin = await manager.createCapability({
+      kind: "installed-plugin",
+      name: "factory",
+      pluginId: "factory@factory-marketplace",
+      installPath
+    });
+    const profile = await manager.createProfile({ name: "Factory", capabilityIds: [plugin.id] });
+
+    const compiled = await manager.compileProfile(profile.id, env.project);
+
+    // Launching with --strict-mcp-config means anything absent here never reaches Claude Code.
+    const server = compiled.mcpConfig.mcpServers["factory-gitlab"];
+    expect(server).toBeDefined();
+    expect(server.args).toEqual([path.join(installPath, "servers", "gitlab", "server.mjs")]);
+    expect(compiled.pluginDirs).toContain(installPath);
+  });
+
+  it("keeps an existing MCP capability when a plugin bundles the same server name", async () => {
+    const env = await makeTempEnv();
+    const manager = new ProfileManager(env.ctx);
+    const installPath = path.join(env.root, "plugins", "dupe");
+    await fs.mkdir(installPath, { recursive: true });
+    await fs.writeFile(
+      path.join(installPath, ".mcp.json"),
+      JSON.stringify({ mcpServers: { weather: { command: "node", args: ["bundled.mjs"] } } })
+    );
+    const mcp = await manager.createCapability({
+      kind: "mcp",
+      name: "weather",
+      config: { type: "http", url: "https://example.com/mcp" }
+    });
+    const plugin = await manager.createCapability({
+      kind: "installed-plugin",
+      name: "dupe",
+      pluginId: "dupe@marketplace",
+      installPath
+    });
+    const profile = await manager.createProfile({ name: "Dupe", capabilityIds: [mcp.id, plugin.id] });
+
+    const compiled = await manager.compileProfile(profile.id, env.project);
+
+    expect(compiled.mcpConfig.mcpServers.weather).toEqual({ type: "http", url: "https://example.com/mcp" });
+    expect(compiled.warnings.join(" ")).toContain('bundles an MCP server named "weather"');
+  });
+
   it("keeps custom plugin editing inside its managed workspace", async () => {
     const env = await makeTempEnv();
     const manager = new ProfileManager(env.ctx);
