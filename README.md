@@ -45,11 +45,17 @@ npm link          # installs the `caps` and `cx` binaries
 Two binaries:
 
 - **`caps`** — the manager CLI.
-- **`cx`** — launcher; applies a profile, then starts Claude Code in the current directory.
+- **`cx`** — launcher; starts Claude Code in the current directory, applying a profile if one is given or assigned.
+
+Without `-p`, `cx` means *no profile override*: a project that already has an
+assigned profile gets it, and a project with none launches with its own
+existing setup, untouched — Capsule writes nothing and records nothing. Use
+`cx -p vanilla` to explicitly launch in safe mode with customizations disabled.
 
 ```bash
-cx                          # launch with the Vanilla profile
+cx                          # the project's assigned profile, or its own setup
 cx -p personal              # launch with a named profile
+cx -p vanilla               # explicitly disable all customizations
 cx -p personal -- --resume  # pass arguments through to Claude Code
 
 caps profiles list          # all profiles and their capabilities

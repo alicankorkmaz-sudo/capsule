@@ -292,4 +292,31 @@ describe("ProfileManager", () => {
     expect(overview.capabilities.filter((item) => item.name === "review")).toHaveLength(1);
     expect(overview.profiles.find((item) => item.id === profile.id)?.capabilityIds).toEqual([original.id]);
   });
+
+  it("launches unmanaged without touching the project or recording an assignment", async () => {
+    const env = await makeTempEnv();
+    const manager = new ProfileManager(env.ctx);
+    const settingsPath = path.join(env.project, ".claude", "settings.local.json");
+    await fs.mkdir(path.dirname(settingsPath), { recursive: true });
+    await fs.writeFile(settingsPath, '{"mine":true}\n');
+
+    const launch = await manager.launchUnmanaged(env.project, { dryRun: true, extraArgs: ["--resume"] });
+
+    // The project's own settings survive verbatim, and no profile flags are injected.
+    expect(await fs.readFile(settingsPath, "utf8")).toBe('{"mine":true}\n');
+    expect(launch.args).toEqual(["--resume"]);
+    expect(launch.args).not.toContain("--safe-mode");
+    expect((await manager.getOverview(env.project)).selectedAssignment).toBeUndefined();
+  });
+
+  it("keeps applying a profile when one is explicitly launched", async () => {
+    const env = await makeTempEnv();
+    const manager = new ProfileManager(env.ctx);
+
+    const launch = await manager.launch("vanilla", env.project, { dryRun: true, confirmOwnership: true });
+
+    expect(launch.args).toContain("--safe-mode");
+    const overview = await manager.getOverview(env.project);
+    expect(overview.selectedAssignment?.profileId).toBe("vanilla");
+  });
 });

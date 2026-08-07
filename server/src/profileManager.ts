@@ -560,35 +560,60 @@ export class ProfileManager {
             ...compiled.pluginDirs.flatMap((pluginDir) => ["--plugin-dir", pluginDir]),
             ...(options.extraArgs ?? [])
           ];
-    const runnerPath = await this.writeLaunchRunner(runtimeDir, assignment.projectPath, claudeArgs);
+    return this.spawnLaunch(assignment.projectPath, runtimeDir, claudeArgs, compiled.warnings, options.dryRun);
+  }
+
+  /**
+   * Launch Claude Code without applying or recording anything. Used when no
+   * profile override was given and the project has no assignment: the project
+   * keeps its own configuration and Capsule stays out of the way.
+   */
+  async launchUnmanaged(
+    projectPath: string,
+    options: { dryRun?: boolean; extraArgs?: string[] } = {}
+  ): Promise<{ launched: boolean; command: string; args: string[]; warnings: string[] }> {
+    const resolvedProject = path.resolve(projectPath);
+    const claudeArgs = [...(options.extraArgs ?? [])];
+    const runtimeDir = this.projectRuntimeDir(resolvedProject);
+    return this.spawnLaunch(resolvedProject, runtimeDir, claudeArgs, [], options.dryRun);
+  }
+
+  private async spawnLaunch(
+    projectPath: string,
+    runtimeDir: string,
+    claudeArgs: string[],
+    warnings: string[],
+    dryRun?: boolean
+  ): Promise<{ launched: boolean; command: string; args: string[]; warnings: string[] }> {
+    const runnerPath = await this.writeLaunchRunner(runtimeDir, projectPath, claudeArgs);
     const runnerCommand = `${shellQuote(process.execPath)} ${shellQuote(runnerPath)}`;
-    const command = `cd ${shellQuote(assignment.projectPath)} && exec ${runnerCommand}`;
-    if (options.dryRun) return { launched: false, command, args: claudeArgs, warnings: compiled.warnings };
+    const command = `cd ${shellQuote(projectPath)} && exec ${runnerCommand}`;
+    if (dryRun) return { launched: false, command, args: claudeArgs, warnings };
     if (process.platform !== "darwin" || !(await this.ghosttyExists())) {
       return {
         launched: false,
         command,
         args: claudeArgs,
-        warnings: [...compiled.warnings, "Ghostty was not found; run the displayed command manually."]
+        warnings: [...warnings, "Ghostty was not found; run the displayed command manually."]
       };
     }
     const script = [
       'tell application "Ghostty"',
-      `set profileConfig to new surface configuration from {initial working directory:${appleScriptQuote(assignment.projectPath)}, command:${appleScriptQuote(`shell:exec ${runnerCommand}`)}, wait after command:true}`,
+      `set profileConfig to new surface configuration from {initial working directory:${appleScriptQuote(projectPath)}, command:${appleScriptQuote(`shell:exec ${runnerCommand}`)}, wait after command:true}`,
       "new window with configuration profileConfig",
       "activate",
       "end tell"
     ].join("\n");
     try {
       await execFileAsync("/usr/bin/osascript", ["-e", script]);
-      return { launched: true, command, args: claudeArgs, warnings: compiled.warnings };
+      return { launched: true, command, args: claudeArgs, warnings };
     } catch (err) {
       return {
         launched: false,
         command,
         args: claudeArgs,
         warnings: [
-          ...compiled.warnings,
+          ...warnings,
           `Ghostty could not be opened: ${errorMessage(err)}. Run the displayed command manually.`
         ]
       };

@@ -153,11 +153,11 @@ export function registerProfileCommands(program: Command, getDeps: () => CliDeps
 
   program
     .command("launch")
-    .description("Apply a profile and launch Claude Code in the project")
-    .option("-p, --profile <name>", "profile name or id", "vanilla")
+    .description("Launch Claude Code in the project, applying a profile if one is given or assigned")
+    .option("-p, --profile <name>", "profile name or id (default: the project's assigned profile, or none)")
     .option("-f, --force", "overwrite drifted managed files")
     .argument("[claudeArgs...]", "arguments passed to Claude Code (use -- before Claude flags)")
-    .action(async (claudeArgs: string[], options: { profile: string; force?: boolean }) => {
+    .action(async (claudeArgs: string[], options: { profile?: string; force?: boolean }) => {
       const deps = getDeps();
       const code = await runLaunch(
         deps.profiles,

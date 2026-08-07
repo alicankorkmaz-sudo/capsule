@@ -9,7 +9,7 @@ import { formatProfileList, resolveProfile, runLaunch } from "./cli/launchFlow";
 export { formatProfileList, resolveProfile };
 
 export interface ProfileCliOptions {
-  profile: string;
+  profile?: string;
   projectPath: string;
   confirmOwnership: boolean;
   force: boolean;
@@ -21,7 +21,7 @@ export interface ProfileCliOptions {
 
 export function parseProfileCliArgs(argv: string[], cwd = process.cwd()): ProfileCliOptions {
   const options: ProfileCliOptions = {
-    profile: "vanilla",
+    profile: undefined,
     projectPath: cwd,
     confirmOwnership: false,
     force: false,
@@ -101,11 +101,15 @@ function requiredArgument(value: string | undefined, flag: string): string {
 function helpText(): string {
   return `Usage: cx [options] [-- Claude arguments]
 
-Starts Claude Code in the current directory with a Capsule profile.
-The default profile is Vanilla. The full manager CLI is available as caps.
+Starts Claude Code in the current directory.
+
+Without -p, the project's assigned profile is used; a project with no
+assigned profile launches with its own existing setup, untouched.
+The full manager CLI is available as caps.
 
 Options:
-  -p, --profile <name>   Profile name or id (default: vanilla)
+  -p, --profile <name>  Profile name or id (default: the project's assigned
+                        profile, or none)
   -C, --project <path>  Project directory (default: current directory)
   -l, --list-profiles   List available profiles
   -y, --yes             Confirm adoption of existing local Claude files

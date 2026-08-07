@@ -5,7 +5,9 @@ import type { Capability, Profile } from "../types";
 import { askYesNo, defaultIO, type CliIO } from "./output";
 
 export interface LaunchOptions {
-  profile: string;
+  /** Explicit profile override. Undefined means "no override" — use the
+   *  project's assigned profile, or launch unmanaged if it has none. */
+  profile?: string;
   projectPath: string;
   confirmOwnership: boolean;
   force: boolean;
@@ -64,7 +66,22 @@ export async function runLaunch(
 ): Promise<number> {
   await assertDirectory(options.projectPath);
   const overview = await manager.getOverview(options.projectPath);
-  const profile = resolveProfile(overview.profiles, options.profile);
+
+  // No explicit override: fall back to whatever this project is already
+  // assigned. With no assignment there is nothing to apply, so leave the
+  // project's own configuration untouched and just start Claude.
+  const profileRef = options.profile ?? overview.selectedAssignment?.profileId;
+  if (!profileRef) {
+    const launch = await manager.launchUnmanaged(options.projectPath, {
+      dryRun: true,
+      extraArgs: options.claudeArgs
+    });
+    for (const warning of launch.warnings) io.err(`Warning: ${warning}\n`);
+    io.out(`Starting Claude with the project's own setup in ${options.projectPath}\n`);
+    return runCommand(launch.command, options.projectPath);
+  }
+
+  const profile = resolveProfile(overview.profiles, profileRef);
   const preview = await manager.previewApply(profile.id, options.projectPath);
   let confirmOwnership = options.confirmOwnership;
   let force = options.force;

@@ -21,9 +21,9 @@ const profiles: Profile[] = [
 ];
 
 describe("profile CLI", () => {
-  it("defaults to Vanilla in the current directory", () => {
+  it("leaves the profile unset in the current directory", () => {
     const options = parseProfileCliArgs([], "/tmp/project");
-    expect(options.profile).toBe("vanilla");
+    expect(options.profile).toBeUndefined();
     expect(options.projectPath).toBe("/tmp/project");
     expect(options.claudeArgs).toEqual([]);
   });
