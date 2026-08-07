@@ -1,0 +1,40 @@
+{
+  "name": "capsule",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Profile-based capability manager for Claude Code and Codex",
+  "bin": {
+    "caps": "dist/server/cli/index.js",
+    "cx": "dist/server/profileCli.js"
+  },
+  "scripts": {
+    "dev": "concurrently -k -n api,web -c cyan,magenta \"tsx watch server/src/index.ts\" \"vite --host 127.0.0.1\"",
+    "build": "npm run build:server && npm run build:client",
+    "build:server": "tsc -p tsconfig.server.json",
+    "build:client": "vite build",
+    "start": "node dist/server/index.js",
+    "test": "vitest run",
+    "typecheck": "tsc -p tsconfig.server.json --noEmit && tsc -p tsconfig.client.json --noEmit"
+  },
+  "dependencies": {
+    "@fastify/static": "^10.1.0",
+    "@iarna/toml": "^2.2.5",
+    "commander": "^15.0.0",
+    "fastify": "^5.6.2",
+    "lucide-react": "^0.468.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "zod": "^3.24.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "@types/react": "^18.3.17",
+    "@types/react-dom": "^18.3.5",
+    "@vitejs/plugin-react": "^4.3.4",
+    "concurrently": "^9.1.2",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2",
+    "vite": "^6.0.3",
+    "vitest": "^4.1.10"
+  }
+}

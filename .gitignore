@@ -1,0 +1,12 @@
+node_modules/
+dist/
+
+# Local Claude/Codex state and private profile notes
+CLAUDE.local.md
+.claude/settings.local.json
+.claude/scheduled_tasks.lock
+.playwright-mcp/
+
+# Editor / OS noise
+.DS_Store
+*.log
