@@ -34,6 +34,7 @@ import {
   writeWorkspaceFile
 } from "./profileStorage";
 import {
+  backupExists,
   backupFile,
   ensureDir,
   pathExists,
@@ -524,11 +525,25 @@ export class ProfileManager {
     if (await this.hasActiveSession(resolvedProject)) {
       throw new Error("Close active Claude sessions for this project before deactivating its profile.");
     }
+    // A pruned or hand-deleted backup must not strand the project as managed
+    // forever: skip what is gone and restore whatever survives. Any other
+    // restore failure is still fatal — that one is recoverable by retrying.
+    const missing: string[] = [];
     for (const backupId of assignment.originalBackupIds ?? []) {
+      if (!(await backupExists(this.ctx, backupId))) {
+        missing.push(backupId);
+        continue;
+      }
       await restoreBackup(this.ctx, backupId);
     }
     delete store.assignments[key];
     await writeProfileStore(this.ctx, store, `deactivate profile for ${resolvedProject}`);
+    if (missing.length) {
+      process.stderr.write(
+        `capsule: deactivated ${resolvedProject}, but ${missing.length} original backup(s) were missing ` +
+          `so those files were left as-is: ${missing.join(", ")}\n`
+      );
+    }
   }
 
   async launch(

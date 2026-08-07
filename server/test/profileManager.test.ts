@@ -309,6 +309,31 @@ describe("ProfileManager", () => {
     expect((await manager.getOverview(env.project)).selectedAssignment).toBeUndefined();
   });
 
+  it("deactivates even when the original backups are gone", async () => {
+    const env = await makeTempEnv();
+    const manager = new ProfileManager(env.ctx);
+    await manager.applyProfile("personal", env.project, { confirmOwnership: true });
+
+    // Simulate pruned/hand-deleted backups.
+    await fs.rm(path.join(env.ctx.appDir, "backups"), { recursive: true, force: true });
+
+    await expect(manager.deactivate(env.project)).resolves.toBeUndefined();
+    expect((await manager.getOverview(env.project)).selectedAssignment).toBeUndefined();
+  });
+
+  it("still restores surviving backups on deactivate", async () => {
+    const env = await makeTempEnv();
+    const manager = new ProfileManager(env.ctx);
+    const instructionsPath = path.join(env.project, "CLAUDE.local.md");
+    await fs.writeFile(instructionsPath, "original instructions\n");
+
+    await manager.applyProfile("personal", env.project, { confirmOwnership: true });
+    expect(await fs.readFile(instructionsPath, "utf8")).not.toBe("original instructions\n");
+
+    await manager.deactivate(env.project);
+    expect(await fs.readFile(instructionsPath, "utf8")).toBe("original instructions\n");
+  });
+
   it("keeps applying a profile when one is explicitly launched", async () => {
     const env = await makeTempEnv();
     const manager = new ProfileManager(env.ctx);

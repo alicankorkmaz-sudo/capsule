@@ -166,6 +166,12 @@ export async function listBackups(ctx: RuntimeContext): Promise<BackupEntry[]> {
     .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
 }
 
+/** True when the backup record still exists on disk and is readable. */
+export async function backupExists(ctx: RuntimeContext, backupId: string): Promise<boolean> {
+  const entry = await readJsonFile<BackupEntry>(backupPath(ctx, backupId), {} as BackupEntry);
+  return Boolean(entry.id);
+}
+
 export async function restoreBackup(
   ctx: RuntimeContext,
   backupId: string,
