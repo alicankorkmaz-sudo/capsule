@@ -1,6 +1,6 @@
 # Capsule
 
-[![CI](https://github.com/alicankorkmaz/capsule/actions/workflows/ci.yml/badge.svg)](https://github.com/alicankorkmaz/capsule/actions/workflows/ci.yml)
+[![CI](https://github.com/alicankorkmaz-sudo/capsule/actions/workflows/ci.yml/badge.svg)](https://github.com/alicankorkmaz-sudo/capsule/actions/workflows/ci.yml)
 
 Profile-based capability manager for Claude Code and Codex.
 
@@ -37,13 +37,13 @@ Capabilities are written into six config targets, each detected and validated se
 ## Install
 
 ```bash
-npm install -g @alicankorkmaz/capsule
+npm install -g @alicankorkmaz-sudo/capsule
 ```
 
 Or from source:
 
 ```bash
-git clone https://github.com/alicankorkmaz/capsule.git
+git clone https://github.com/alicankorkmaz-sudo/capsule.git
 cd capsule
 npm install
 npm run build

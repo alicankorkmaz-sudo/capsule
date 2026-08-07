@@ -1,16 +1,16 @@
 {
-  "name": "@alicankorkmaz/capsule",
+  "name": "@alicankorkmaz-sudo/capsule",
   "version": "0.1.0",
   "description": "Profile-based capability manager for Claude Code and Codex",
   "license": "MIT",
   "author": "Alican Korkmaz",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/alicankorkmaz/capsule.git"
+    "url": "git+https://github.com/alicankorkmaz-sudo/capsule.git"
   },
-  "homepage": "https://github.com/alicankorkmaz/capsule#readme",
+  "homepage": "https://github.com/alicankorkmaz-sudo/capsule#readme",
   "bugs": {
-    "url": "https://github.com/alicankorkmaz/capsule/issues"
+    "url": "https://github.com/alicankorkmaz-sudo/capsule/issues"
   },
   "keywords": [
     "claude-code",
