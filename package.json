@@ -1,6 +1,6 @@
 {
   "name": "@alicankorkmaz-sudo/capsule",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Profile-based capability manager for Claude Code and Codex",
   "license": "MIT",
   "author": "Alican Korkmaz",
