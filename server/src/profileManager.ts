@@ -377,6 +377,19 @@ export class ProfileManager {
     const skills: Capability[] = [];
     const warnings: string[] = [];
 
+    // Installed plugins live under version-pinned paths
+    // (…/cache/<marketplace>/<plugin>/<version>), so a stored installPath goes
+    // stale the moment the plugin is updated and the profile would keep
+    // launching the old version. Re-resolve against the live inventory at
+    // compile time, but lazily — a profile with no installed plugins must not
+    // pay for shelling out to `claude`.
+    const staleCapabilities: { capabilityId: string; plugin: InstalledPlugin }[] = [];
+    let livePlugins: InstalledPlugin[] | undefined;
+    const resolveInstalled = async (pluginId: string): Promise<InstalledPlugin | undefined> => {
+      livePlugins ??= await this.discoverInstalledPlugins().catch(() => []);
+      return livePlugins.find((plugin) => plugin.id === pluginId);
+    };
+
     for (const capabilityId of profile.capabilityIds) {
       const item = store.capabilities[capabilityId];
       if (!item) throw new Error(`Profile references missing capability: ${capabilityId}`);
@@ -385,13 +398,35 @@ export class ProfileManager {
           if (mcpServers[item.name]) throw new Error(`Duplicate MCP server name: ${item.name}`);
           mcpServers[item.name] = item.config;
           break;
-        case "installed-plugin":
-          if (!(await pathExists(item.installPath))) {
+        case "installed-plugin": {
+          // Claude caches plugins under a version-pinned path
+          // (…/plugins/cache/<marketplace>/<plugin>/<version>) and keeps the
+          // old directory after an update, so a stored installPath stays valid
+          // while silently pointing at the superseded version. Whenever the
+          // path is one Claude manages, the live inventory is authoritative.
+          // Paths outside that cache are left alone: they are pinned on
+          // purpose and redirecting them would swap the user's plugin out.
+          let installPath = item.installPath;
+          if (isManagedPluginPath(this.ctx, installPath)) {
+            const live = await resolveInstalled(item.pluginId);
+            if (live && live.installPath !== installPath && (await pathExists(live.installPath))) {
+              if (live.version && live.version !== item.version) {
+                warnings.push(
+                  `Plugin "${item.pluginId}" updated from ${item.version ?? "an unknown version"} to ` +
+                    `${live.version}; using the installed version.`
+                );
+              }
+              installPath = live.installPath;
+              staleCapabilities.push({ capabilityId, plugin: live });
+            }
+          }
+          if (!(await pathExists(installPath))) {
             throw new Error(`Installed plugin is missing: ${item.pluginId}`);
           }
-          pluginDirs.push(item.installPath);
-          await mergeBundledMcpServers(item.installPath, item.name, mcpServers, warnings);
+          pluginDirs.push(installPath);
+          await mergeBundledMcpServers(installPath, item.name, mcpServers, warnings);
           break;
+        }
         case "custom-plugin":
           await this.assertCustomPluginPath(item.rootPath);
           pluginDirs.push(item.rootPath);
@@ -417,6 +452,25 @@ export class ProfileManager {
       }
     }
     if (Object.keys(hooks).length) settings.hooks = hooks;
+
+    // Compile reads the live inventory anyway, so fold what it learned back
+    // into the catalog: without this the stored version stays stale in the UI
+    // until someone triggers a manual plugin sync.
+    if (staleCapabilities.length) {
+      const fresh = await readProfileStore(this.ctx);
+      const now = new Date().toISOString();
+      let changed = false;
+      for (const { capabilityId, plugin } of staleCapabilities) {
+        const target = fresh.capabilities[capabilityId];
+        if (!target || target.kind !== "installed-plugin") continue;
+        target.installPath = plugin.installPath;
+        target.version = plugin.version;
+        target.scope = plugin.scope;
+        target.updatedAt = now;
+        changed = true;
+      }
+      if (changed) await writeProfileStore(this.ctx, fresh, "refresh updated plugin versions");
+    }
 
     const runtimeDir = this.projectRuntimeDir(projectPath);
     const syntheticPluginDir = skills.length ? path.join(runtimeDir, "profile-skills") : undefined;
@@ -1217,6 +1271,17 @@ async function mergeBundledMcpServers(
     }
     mcpServers[name] = expandPluginRoot(rawConfig, pluginRoot) as Record<string, unknown>;
   }
+}
+
+/**
+ * True when `installPath` lives inside the plugin cache Claude owns, where
+ * directories are version-pinned and superseded versions are left behind. Only
+ * those paths may be re-pointed at the installed version during a compile.
+ */
+function isManagedPluginPath(ctx: RuntimeContext, installPath: string): boolean {
+  const cacheRoot = path.join(ctx.homeDir, ".claude", "plugins", "cache");
+  const relative = path.relative(cacheRoot, path.resolve(installPath));
+  return relative !== "" && !relative.startsWith("..") && !path.isAbsolute(relative);
 }
 
 function expandPluginRoot(value: unknown, pluginRoot: string): unknown {

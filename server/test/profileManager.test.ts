@@ -191,6 +191,72 @@ describe("ProfileManager", () => {
     expect(compiled.pluginDirs).toContain(installPath);
   });
 
+  it("follows an installed plugin to its new version after an update", async () => {
+    const env = await makeTempEnv();
+    const manager = new ProfileManager(env.ctx);
+    const pluginId = "factory@factory-marketplace";
+    const cacheRoot = path.join(env.home, ".claude", "plugins", "cache", "factory-marketplace", "factory");
+    // Claude leaves the superseded version directory in place after updating,
+    // so the stale path stays readable and must not be what we launch.
+    const oldPath = path.join(cacheRoot, "1.2.1");
+    const newPath = path.join(cacheRoot, "1.3.0");
+    for (const dir of [oldPath, newPath]) {
+      await fs.mkdir(dir, { recursive: true });
+    }
+
+    const plugin = await manager.createCapability({
+      kind: "installed-plugin",
+      name: "factory",
+      pluginId,
+      installPath: oldPath,
+      version: "1.2.1"
+    });
+    const profile = await manager.createProfile({ name: "Factory", capabilityIds: [plugin.id] });
+
+    manager.discoverInstalledPlugins = async () => [
+      { id: pluginId, version: "1.3.0", scope: "user", enabled: true, installPath: newPath }
+    ];
+
+    const compiled = await manager.compileProfile(profile.id, env.project);
+
+    expect(compiled.pluginDirs).toContain(newPath);
+    expect(compiled.pluginDirs).not.toContain(oldPath);
+    expect(compiled.warnings.join(" ")).toContain("1.3.0");
+
+    // The refreshed version is folded back into the catalog, so the UI stops
+    // reporting the superseded one without a manual sync.
+    const stored = (await manager.getOverview()).capabilities.find((item) => item.id === plugin.id);
+    expect(stored?.version).toBe("1.3.0");
+  });
+
+  it("keeps a plugin pinned to a path outside the Claude-managed cache", async () => {
+    const env = await makeTempEnv();
+    const manager = new ProfileManager(env.ctx);
+    const pluginId = "factory@factory-marketplace";
+    const pinnedPath = path.join(env.root, "vendor", "factory");
+    const cachePath = path.join(env.home, ".claude", "plugins", "cache", "factory-marketplace", "factory", "1.3.0");
+    for (const dir of [pinnedPath, cachePath]) {
+      await fs.mkdir(dir, { recursive: true });
+    }
+
+    const plugin = await manager.createCapability({
+      kind: "installed-plugin",
+      name: "factory",
+      pluginId,
+      installPath: pinnedPath
+    });
+    const profile = await manager.createProfile({ name: "Factory", capabilityIds: [plugin.id] });
+
+    manager.discoverInstalledPlugins = async () => [
+      { id: pluginId, version: "1.3.0", scope: "user", enabled: true, installPath: cachePath }
+    ];
+
+    const compiled = await manager.compileProfile(profile.id, env.project);
+
+    expect(compiled.pluginDirs).toContain(pinnedPath);
+    expect(compiled.pluginDirs).not.toContain(cachePath);
+  });
+
   it("keeps an existing MCP capability when a plugin bundles the same server name", async () => {
     const env = await makeTempEnv();
     const manager = new ProfileManager(env.ctx);
