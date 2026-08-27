@@ -176,9 +176,9 @@ export function App() {
         });
         if (!result.launched) {
           await navigator.clipboard?.writeText(result.command);
-          setNotice("Ghostty could not be opened. The launch command was copied.");
+          setNotice("The terminal could not be opened. The launch command was copied.");
         } else {
-          setNotice("Claude launched in Ghostty.");
+          setNotice("Claude launched in your terminal.");
         }
       } else {
         await applyProfile(preview.profile.id, preview.projectPath, {
@@ -434,7 +434,7 @@ function ProjectsView(props: {
         <div className="buttonRow">
           {props.assignment && <button className="dangerBtn" onClick={props.onDeactivate}><Power size={16} />Deactivate</button>}
           <button className="secondaryBtn" disabled={!selected || !props.projectPath || props.busy} onClick={() => props.onApply(selected, "apply")}><Save size={16} />Apply</button>
-          <button className="primaryBtn" disabled={!selected || !props.projectPath || props.busy} onClick={() => props.onApply(selected, "launch")}><Play size={16} />Launch in Ghostty</button>
+          <button className="primaryBtn" disabled={!selected || !props.projectPath || props.busy} onClick={() => props.onApply(selected, "launch")}><Play size={16} />Launch in terminal</button>
         </div>
       </section>
     </div>

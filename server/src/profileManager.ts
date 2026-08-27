@@ -56,6 +56,31 @@ const PROFILE_KEYS = new Set([
   "enableAllProjectMcpServers"
 ]);
 
+interface TerminalApp {
+  /** Application bundle name, without the .app suffix. */
+  id: string;
+  /** Name used in warnings shown to the user. */
+  name: string;
+  /** Value TERM_PROGRAM carries when Capsule runs inside this terminal. */
+  termProgram?: string;
+  /** Resolved bundle path; filled in once the app is located on disk. */
+  appPath: string;
+}
+
+/**
+ * Terminals we know how to open, in fallback order. Terminal.app is last because
+ * it ships with macOS and therefore always matches.
+ */
+const TERMINAL_APPS: TerminalApp[] = [
+  { id: "Ghostty", name: "Ghostty", termProgram: "ghostty", appPath: "" },
+  { id: "iTerm", name: "iTerm2", termProgram: "iTerm.app", appPath: "" },
+  { id: "WezTerm", name: "WezTerm", termProgram: "WezTerm", appPath: "" },
+  { id: "Alacritty", name: "Alacritty", termProgram: "alacritty", appPath: "" },
+  { id: "kitty", name: "kitty", appPath: "" },
+  { id: "Warp", name: "Warp", termProgram: "WarpTerminal", appPath: "" },
+  { id: "Terminal", name: "Terminal", termProgram: "Apple_Terminal", appPath: "" }
+];
+
 export interface CapabilityInput {
   kind: CapabilityKind;
   name: string;
@@ -660,23 +685,25 @@ export class ProfileManager {
     const runnerCommand = `${shellQuote(process.execPath)} ${shellQuote(runnerPath)}`;
     const command = `cd ${shellQuote(projectPath)} && exec ${runnerCommand}`;
     if (dryRun) return { launched: false, command, args: claudeArgs, warnings };
-    if (process.platform !== "darwin" || !(await this.ghosttyExists())) {
+    if (process.platform !== "darwin") {
       return {
         launched: false,
         command,
         args: claudeArgs,
-        warnings: [...warnings, "Ghostty was not found; run the displayed command manually."]
+        warnings: [...warnings, "Automatic launch is only supported on macOS; run the displayed command manually."]
       };
     }
-    const script = [
-      'tell application "Ghostty"',
-      `set profileConfig to new surface configuration from {initial working directory:${appleScriptQuote(projectPath)}, command:${appleScriptQuote(`shell:exec ${runnerCommand}`)}, wait after command:true}`,
-      "new window with configuration profileConfig",
-      "activate",
-      "end tell"
-    ].join("\n");
+    const terminal = await this.resolveTerminal();
+    if (!terminal) {
+      return {
+        launched: false,
+        command,
+        args: claudeArgs,
+        warnings: [...warnings, "No terminal application was found; run the displayed command manually."]
+      };
+    }
     try {
-      await execFileAsync("/usr/bin/osascript", ["-e", script]);
+      await this.openInTerminal(terminal, runtimeDir, projectPath, runnerCommand);
       return { launched: true, command, args: claudeArgs, warnings };
     } catch (err) {
       return {
@@ -685,10 +712,74 @@ export class ProfileManager {
         args: claudeArgs,
         warnings: [
           ...warnings,
-          `Ghostty could not be opened: ${errorMessage(err)}. Run the displayed command manually.`
+          `${terminal.name} could not be opened: ${errorMessage(err)}. Run the displayed command manually.`
         ]
       };
     }
+  }
+
+  /**
+   * Open the launch command in the user's terminal. Ghostty exposes a scripting
+   * dictionary for configuring a new surface; every other terminal is handed an
+   * executable shell script via `open -a`, which each of them runs in a new window.
+   */
+  private async openInTerminal(
+    terminal: TerminalApp,
+    runtimeDir: string,
+    projectPath: string,
+    runnerCommand: string
+  ): Promise<void> {
+    if (terminal.id === "Ghostty") {
+      const script = [
+        'tell application "Ghostty"',
+        `set profileConfig to new surface configuration from {initial working directory:${appleScriptQuote(projectPath)}, command:${appleScriptQuote(`shell:exec ${runnerCommand}`)}, wait after command:true}`,
+        "new window with configuration profileConfig",
+        "activate",
+        "end tell"
+      ].join("\n");
+      await execFileAsync("/usr/bin/osascript", ["-e", script]);
+      return;
+    }
+    const scriptPath = path.join(runtimeDir, "launch.command");
+    const scriptSource = [
+      "#!/bin/sh",
+      `cd ${shellQuote(projectPath)} || exit 1`,
+      `exec ${runnerCommand}`,
+      ""
+    ].join("\n");
+    await fs.writeFile(scriptPath, scriptSource, { mode: 0o700 });
+    await fs.chmod(scriptPath, 0o700).catch(() => undefined);
+    await execFileAsync("/usr/bin/open", ["-a", terminal.appPath, scriptPath]);
+  }
+
+  /**
+   * Pick the terminal to launch in. The terminal Capsule itself was started from
+   * wins when it is one we know how to drive; otherwise the first installed app
+   * from the known list is used, falling back to Terminal.app, which ships with macOS.
+   */
+  private async resolveTerminal(): Promise<TerminalApp | undefined> {
+    const termProgram = process.env.TERM_PROGRAM;
+    const current = termProgram
+      ? TERMINAL_APPS.find((app) => app.termProgram === termProgram)
+      : undefined;
+    const ordered = current ? [current, ...TERMINAL_APPS.filter((app) => app !== current)] : TERMINAL_APPS;
+    for (const app of ordered) {
+      const appPath = await this.terminalAppPath(app.id);
+      if (appPath) return { ...app, appPath };
+    }
+    return undefined;
+  }
+
+  private async terminalAppPath(id: string): Promise<string | undefined> {
+    const candidates = [
+      `/Applications/${id}.app`,
+      `/System/Applications/Utilities/${id}.app`,
+      path.join(this.ctx.homeDir, "Applications", `${id}.app`)
+    ];
+    for (const candidate of candidates) {
+      if (await pathExists(candidate)) return candidate;
+    }
+    return undefined;
   }
 
   async scanImport(projectPath?: string): Promise<ImportCandidate[]> {
@@ -1042,13 +1133,6 @@ export class ProfileManager {
     if (!resolved.startsWith(`${root}${path.sep}`) || !(await pathExists(resolved))) {
       throw new Error("Custom plugin path is outside the managed catalog or no longer exists.");
     }
-  }
-
-  private async ghosttyExists(): Promise<boolean> {
-    return (
-      (await pathExists("/Applications/Ghostty.app")) ||
-      (await pathExists(path.join(this.ctx.homeDir, "Applications", "Ghostty.app")))
-    );
   }
 
   private async hasActiveSession(projectPath: string): Promise<boolean> {
