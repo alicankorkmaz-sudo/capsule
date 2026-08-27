@@ -57,7 +57,7 @@ Requires Node 20 or newer.
 Two binaries:
 
 - **`caps`** — the manager CLI.
-- **`cx`** — launcher; starts Claude Code in the current directory, applying a profile if one is given or assigned.
+- **`cx`** — launcher; starts Claude Code (or Codex, via `--target codex`) in the current directory, applying a profile if one is given or assigned.
 
 Without `-p`, `cx` means *no profile override*: a project that already has an
 assigned profile gets it, and a project with none launches with its own
@@ -69,6 +69,9 @@ cx                          # the project's assigned profile, or its own setup
 cx -p personal              # launch with a named profile
 cx -p vanilla               # explicitly disable all customizations
 cx -p personal -- --resume  # pass arguments through to Claude Code
+cx -t codex                 # start Codex instead of Claude Code
+cx --yolo                   # skip every permission/approval prompt
+cx -t codex --yolo          # same, for Codex
 
 caps profiles list          # all profiles and their capabilities
 caps profiles apply personal
@@ -98,6 +101,19 @@ npm start       # built server on :8787, serves the built client
 
 Applying a profile rewrites managed files, so Capsule backs up their prior contents
 first — `caps backups list`, then `caps backups restore <id>` or `restore-group <id>`.
+### Skipping permission prompts
+
+`--yolo` starts the agent with every confirmation turned off: it passes
+`--dangerously-skip-permissions` to Claude Code and
+`--dangerously-bypass-approvals-and-sandbox` to Codex. The agent can then run
+commands without asking, so use it only where that blast radius is acceptable.
+It is rejected with the `vanilla` profile, whose whole point is safe mode.
+
+Codex reads MCP servers from `~/.codex/config.toml` (managed by `caps servers`)
+rather than from a compiled profile, so `cx -t codex` applies the profile's
+Claude-side files but warns that profile plugin directories are not passed to
+Codex.
+
 If a managed file was edited outside Capsule, apply refuses until you pass `--force`,
 so hand edits are never silently clobbered.
 

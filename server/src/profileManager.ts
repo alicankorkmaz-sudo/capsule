@@ -9,6 +9,7 @@ import type {
   CompiledProfile,
   HookCapability,
   InstalledPlugin,
+  LaunchTarget,
   Profile,
   ProfileStore,
   ProjectAssignment,
@@ -635,28 +636,56 @@ export class ProfileManager {
       force?: boolean;
       dryRun?: boolean;
       extraArgs?: string[];
+      target?: LaunchTarget;
+      yolo?: boolean;
     } = {}
   ): Promise<{ launched: boolean; command: string; args: string[]; warnings: string[] }> {
+    const target = options.target ?? "claude";
     const assignment = await this.applyProfile(profileId, projectPath, options);
     const store = await readProfileStore(this.ctx);
     const profile = store.profiles[profileId];
     const runtimeDir = this.projectRuntimeDir(assignment.projectPath);
     const compiled = await this.compileProfile(profileId, assignment.projectPath);
-    const claudeArgs =
-      profile.system === "vanilla"
-        ? ["--safe-mode", ...(options.extraArgs ?? [])]
-        : [
-            "--setting-sources",
-            "local",
-            "--settings",
-            path.join(runtimeDir, "base-settings.json"),
-            "--strict-mcp-config",
-            "--mcp-config",
-            path.join(runtimeDir, "mcp.json"),
-            ...compiled.pluginDirs.flatMap((pluginDir) => ["--plugin-dir", pluginDir]),
-            ...(options.extraArgs ?? [])
-          ];
-    return this.spawnLaunch(assignment.projectPath, runtimeDir, claudeArgs, compiled.warnings, options.dryRun);
+
+    // The vanilla profile exists to start with everything switched off, so
+    // pairing it with a permission bypass would quietly defeat its purpose.
+    if (options.yolo && profile.system === "vanilla") {
+      throw new Error(
+        "--yolo cannot be combined with the vanilla profile: vanilla starts in safe mode. " +
+          "Pick another profile, or drop --yolo."
+      );
+    }
+
+    const yoloArgs = options.yolo ? [yoloFlagFor(target)] : [];
+    const warnings = [...compiled.warnings];
+    let launchArgs: string[];
+
+    if (target === "codex") {
+      // Codex reads its MCP servers from config.toml, which the codex adapter
+      // maintains; there is no per-invocation config flag to point it at the
+      // compiled profile the way Claude's --mcp-config does.
+      if (compiled.pluginDirs.length) {
+        warnings.push("Codex does not support plugin directories; the profile's plugins were not applied.");
+      }
+      launchArgs = [...yoloArgs, ...(options.extraArgs ?? [])];
+    } else if (profile.system === "vanilla") {
+      launchArgs = ["--safe-mode", ...(options.extraArgs ?? [])];
+    } else {
+      launchArgs = [
+        "--setting-sources",
+        "local",
+        "--settings",
+        path.join(runtimeDir, "base-settings.json"),
+        "--strict-mcp-config",
+        "--mcp-config",
+        path.join(runtimeDir, "mcp.json"),
+        ...compiled.pluginDirs.flatMap((pluginDir) => ["--plugin-dir", pluginDir]),
+        ...yoloArgs,
+        ...(options.extraArgs ?? [])
+      ];
+    }
+
+    return this.spawnLaunch(assignment.projectPath, runtimeDir, launchArgs, warnings, options.dryRun, target);
   }
 
   /**
@@ -666,12 +695,13 @@ export class ProfileManager {
    */
   async launchUnmanaged(
     projectPath: string,
-    options: { dryRun?: boolean; extraArgs?: string[] } = {}
+    options: { dryRun?: boolean; extraArgs?: string[]; target?: LaunchTarget; yolo?: boolean } = {}
   ): Promise<{ launched: boolean; command: string; args: string[]; warnings: string[] }> {
+    const target = options.target ?? "claude";
     const resolvedProject = path.resolve(projectPath);
-    const claudeArgs = [...(options.extraArgs ?? [])];
+    const launchArgs = [...(options.yolo ? [yoloFlagFor(target)] : []), ...(options.extraArgs ?? [])];
     const runtimeDir = this.projectRuntimeDir(resolvedProject);
-    return this.spawnLaunch(resolvedProject, runtimeDir, claudeArgs, [], options.dryRun);
+    return this.spawnLaunch(resolvedProject, runtimeDir, launchArgs, [], options.dryRun, target);
   }
 
   private async spawnLaunch(
@@ -679,9 +709,10 @@ export class ProfileManager {
     runtimeDir: string,
     claudeArgs: string[],
     warnings: string[],
-    dryRun?: boolean
+    dryRun?: boolean,
+    binary: string = "claude"
   ): Promise<{ launched: boolean; command: string; args: string[]; warnings: string[] }> {
-    const runnerPath = await this.writeLaunchRunner(runtimeDir, projectPath, claudeArgs);
+    const runnerPath = await this.writeLaunchRunner(runtimeDir, projectPath, claudeArgs, binary);
     const runnerCommand = `${shellQuote(process.execPath)} ${shellQuote(runnerPath)}`;
     const command = `cd ${shellQuote(projectPath)} && exec ${runnerCommand}`;
     if (dryRun) return { launched: false, command, args: claudeArgs, warnings };
@@ -1160,13 +1191,14 @@ export class ProfileManager {
   private async writeLaunchRunner(
     runtimeDir: string,
     projectPath: string,
-    claudeArgs: string[]
+    claudeArgs: string[],
+    binary: string
   ): Promise<string> {
     const runnerPath = path.join(runtimeDir, "launch.cjs");
     const sessionsDir = path.join(runtimeDir, "sessions");
     await ensureDir(sessionsDir);
     const sessionPath = path.join(sessionsDir, `${createId("session")}.pid`);
-    const payload = JSON.stringify({ projectPath, claudeArgs, sessionPath });
+    const payload = JSON.stringify({ projectPath, claudeArgs, sessionPath, binary });
     const source = [
       "#!/usr/bin/env node",
       '"use strict";',
@@ -1174,7 +1206,7 @@ export class ProfileManager {
       'const { spawn } = require("node:child_process");',
       `const payload = ${payload};`,
       'fs.writeFileSync(payload.sessionPath, String(process.pid), { mode: 0o600 });',
-      'const child = spawn("claude", payload.claudeArgs, { cwd: payload.projectPath, stdio: "inherit", env: process.env });',
+      'const child = spawn(payload.binary, payload.claudeArgs, { cwd: payload.projectPath, stdio: "inherit", env: process.env });',
       'const cleanup = () => { try { fs.rmSync(payload.sessionPath, { force: true }); } catch {} };',
       'child.on("exit", (code, signal) => { cleanup(); if (signal) process.kill(process.pid, signal); else process.exit(code ?? 1); });',
       'child.on("error", (error) => { cleanup(); console.error(error.message); process.exit(1); });',
@@ -1424,4 +1456,9 @@ function errorMessage(err: unknown): string {
 function commandOutput(err: unknown): string {
   if (!isRecord(err)) return "";
   return [err.stdout, err.stderr].filter((value) => typeof value === "string").join("\n").trim();
+}
+
+/** Each agent CLI spells "skip every confirmation" differently. */
+function yoloFlagFor(target: LaunchTarget): string {
+  return target === "codex" ? "--dangerously-bypass-approvals-and-sandbox" : "--dangerously-skip-permissions";
 }

@@ -13,6 +13,12 @@ export const TargetKeySchema = z.enum([
 
 export type TargetKey = z.infer<typeof TargetKeySchema>;
 
+/** Which agent CLI `cx` starts. Distinct from TargetKey, which names MCP
+ *  config locations rather than a launchable binary. */
+export const LaunchTargetSchema = z.enum(["claude", "codex"]);
+
+export type LaunchTarget = z.infer<typeof LaunchTargetSchema>;
+
 export type Transport = "stdio" | "http" | "sse" | "ws" | "unknown";
 
 export const JsonValueSchema: z.ZodType<unknown> = z.lazy(() =>

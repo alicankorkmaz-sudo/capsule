@@ -161,6 +161,55 @@ describe("ProfileManager", () => {
     expect(vanilla.args).toEqual(["--safe-mode"]);
   });
 
+  it("maps --yolo to each target's bypass flag and binary", async () => {
+    const env = await makeTempEnv();
+    const manager = new ProfileManager(env.ctx);
+
+    const claude = await manager.launch("personal", env.project, {
+      confirmOwnership: true,
+      dryRun: true,
+      yolo: true
+    });
+    expect(claude.args).toContain("--dangerously-skip-permissions");
+    expect(claude.args).not.toContain("--dangerously-bypass-approvals-and-sandbox");
+
+    const codex = await manager.launch("personal", env.project, {
+      confirmOwnership: true,
+      dryRun: true,
+      target: "codex",
+      yolo: true
+    });
+    expect(codex.args).toContain("--dangerously-bypass-approvals-and-sandbox");
+    // Codex takes none of Claude's config flags.
+    expect(codex.args).not.toContain("--strict-mcp-config");
+
+    const runtimeDir = (await fs.readdir(path.join(env.ctx.appDir, "runtime")))[0];
+    const runner = await fs.readFile(path.join(env.ctx.appDir, "runtime", runtimeDir, "launch.cjs"), "utf8");
+    expect(runner).toContain('"binary":"codex"');
+  });
+
+  it("refuses to combine --yolo with the safe-mode vanilla profile", async () => {
+    const env = await makeTempEnv();
+    const manager = new ProfileManager(env.ctx);
+
+    await expect(
+      manager.launch("vanilla", env.project, { force: true, dryRun: true, yolo: true })
+    ).rejects.toThrow("--yolo cannot be combined with the vanilla profile");
+  });
+
+  it("applies --yolo when launching unmanaged", async () => {
+    const env = await makeTempEnv();
+    const manager = new ProfileManager(env.ctx);
+
+    const launch = await manager.launchUnmanaged(env.project, {
+      dryRun: true,
+      target: "codex",
+      yolo: true,
+      extraArgs: ["--resume"]
+    });
+    expect(launch.args).toEqual(["--dangerously-bypass-approvals-and-sandbox", "--resume"]);
+  });
+
   it("passes a plugin's bundled MCP servers through --strict-mcp-config", async () => {
     const env = await makeTempEnv();
     const manager = new ProfileManager(env.ctx);

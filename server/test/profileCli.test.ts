@@ -42,6 +42,28 @@ describe("profile CLI", () => {
     expect(long.claudeArgs).toEqual(["--continue", "session-id"]);
   });
 
+  it("defaults to the Claude target with yolo off", () => {
+    const options = parseProfileCliArgs([], "/tmp/project");
+    expect(options.target).toBe("claude");
+    expect(options.yolo).toBe(false);
+  });
+
+  it("parses target aliases and the yolo flag", () => {
+    const short = parseProfileCliArgs(["-t", "codex", "--yolo"], "/tmp/project");
+    expect(short.target).toBe("codex");
+    expect(short.yolo).toBe(true);
+    expect(short.claudeArgs).toEqual([]);
+
+    const long = parseProfileCliArgs(["--target=CODEX"], "/tmp/project");
+    expect(long.target).toBe("codex");
+  });
+
+  it("rejects unknown launch targets", () => {
+    expect(() => parseProfileCliArgs(["--target", "gemini"], "/tmp/project")).toThrow(
+      "Unknown target: gemini"
+    );
+  });
+
   it("resolves profile names and ids case-insensitively", () => {
     expect(resolveProfile(profiles, "VANILLA").id).toBe("vanilla");
     expect(resolveProfile(profiles, "Personal").id).toBe("personal");

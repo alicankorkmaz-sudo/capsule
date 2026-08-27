@@ -1,7 +1,7 @@
 import fs from "node:fs/promises";
 import { spawn } from "node:child_process";
 import type { ProfileManager } from "../profileManager";
-import type { Capability, Profile } from "../types";
+import type { Capability, LaunchTarget, Profile } from "../types";
 import { askYesNo, defaultIO, type CliIO } from "./output";
 
 export interface LaunchOptions {
@@ -12,6 +12,10 @@ export interface LaunchOptions {
   confirmOwnership: boolean;
   force: boolean;
   claudeArgs: string[];
+  /** Which agent CLI to start. Defaults to Claude Code. */
+  target?: LaunchTarget;
+  /** Skip every permission/approval prompt in the launched CLI. */
+  yolo?: boolean;
 }
 
 export function resolveProfile(profiles: Profile[], query: string): Profile {
@@ -74,10 +78,12 @@ export async function runLaunch(
   if (!profileRef) {
     const launch = await manager.launchUnmanaged(options.projectPath, {
       dryRun: true,
-      extraArgs: options.claudeArgs
+      extraArgs: options.claudeArgs,
+      target: options.target,
+      yolo: options.yolo
     });
     for (const warning of launch.warnings) io.err(`Warning: ${warning}\n`);
-    io.out(`Starting Claude with the project's own setup in ${options.projectPath}\n`);
+    io.out(`Starting ${targetLabel(options.target)} with the project's own setup in ${options.projectPath}\n`);
     return runCommand(launch.command, options.projectPath);
   }
 
@@ -101,11 +107,17 @@ export async function runLaunch(
     confirmOwnership,
     force,
     dryRun: true,
-    extraArgs: options.claudeArgs
+    extraArgs: options.claudeArgs,
+    target: options.target,
+    yolo: options.yolo
   });
   for (const warning of launch.warnings) io.err(`Warning: ${warning}\n`);
-  io.out(`Starting Claude with profile "${profile.name}" in ${options.projectPath}\n`);
+  io.out(`Starting ${targetLabel(options.target)} with profile "${profile.name}" in ${options.projectPath}\n`);
   return runCommand(launch.command, options.projectPath);
+}
+
+export function targetLabel(target: LaunchTarget | undefined): string {
+  return target === "codex" ? "Codex" : "Claude";
 }
 
 export async function assertDirectory(projectPath: string): Promise<void> {

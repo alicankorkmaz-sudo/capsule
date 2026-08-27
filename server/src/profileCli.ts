@@ -5,6 +5,7 @@ import { stdout } from "node:process";
 import { createRuntimeContext, migrateLegacyAppDir } from "./paths";
 import { ProfileManager } from "./profileManager";
 import { formatProfileList, resolveProfile, runLaunch } from "./cli/launchFlow";
+import { LaunchTargetSchema, type LaunchTarget } from "./types";
 
 export { formatProfileList, resolveProfile };
 
@@ -16,6 +17,8 @@ export interface ProfileCliOptions {
   listProfiles: boolean;
   namesOnly: boolean;
   help: boolean;
+  target: LaunchTarget;
+  yolo: boolean;
   claudeArgs: string[];
 }
 
@@ -28,6 +31,8 @@ export function parseProfileCliArgs(argv: string[], cwd = process.cwd()): Profil
     listProfiles: false,
     namesOnly: false,
     help: false,
+    target: "claude",
+    yolo: false,
     claudeArgs: []
   };
 
@@ -54,6 +59,12 @@ export function parseProfileCliArgs(argv: string[], cwd = process.cwd()): Profil
     } else if (argument === "--names-only") {
       options.listProfiles = true;
       options.namesOnly = true;
+    } else if (argument === "-t" || argument === "--target") {
+      options.target = parseTarget(requiredArgument(argv[++index], argument));
+    } else if (argument.startsWith("--target=")) {
+      options.target = parseTarget(requiredArgument(argument.slice("--target=".length), "--target"));
+    } else if (argument === "--yolo") {
+      options.yolo = true;
     } else if (argument === "-h" || argument === "--help") {
       options.help = true;
     } else {
@@ -89,8 +100,18 @@ export async function runProfileCli(argv: string[]): Promise<number> {
     projectPath: options.projectPath,
     confirmOwnership: options.confirmOwnership,
     force: options.force,
+    target: options.target,
+    yolo: options.yolo,
     claudeArgs: options.claudeArgs
   });
+}
+
+function parseTarget(value: string): LaunchTarget {
+  const parsed = LaunchTargetSchema.safeParse(value.trim().toLowerCase());
+  if (!parsed.success) {
+    throw new Error(`Unknown target: ${value}. Supported targets: ${LaunchTargetSchema.options.join(", ")}`);
+  }
+  return parsed.data;
 }
 
 function requiredArgument(value: string | undefined, flag: string): string {
@@ -99,9 +120,9 @@ function requiredArgument(value: string | undefined, flag: string): string {
 }
 
 function helpText(): string {
-  return `Usage: cx [options] [-- Claude arguments]
+  return `Usage: cx [options] [-- agent CLI arguments]
 
-Starts Claude Code in the current directory.
+Starts Claude Code (or Codex, with --target codex) in the current directory.
 
 Without -p, the project's assigned profile is used; a project with no
 assigned profile launches with its own existing setup, untouched.
@@ -111,6 +132,11 @@ Options:
   -p, --profile <name>  Profile name or id (default: the project's assigned
                         profile, or none)
   -C, --project <path>  Project directory (default: current directory)
+  -t, --target <name>   Agent CLI to start: claude (default) or codex
+      --yolo            Skip all permission/approval prompts in the launched
+                        CLI. Passes --dangerously-skip-permissions to Claude
+                        and --dangerously-bypass-approvals-and-sandbox to
+                        Codex. Not allowed with the vanilla profile.
   -l, --list-profiles   List available profiles
   -y, --yes             Confirm adoption of existing local Claude files
   -f, --force           Overwrite drifted managed files
@@ -120,6 +146,8 @@ Examples:
   cx
   cx -p personal
   cx --profile "Work"
+  cx --yolo
+  cx -t codex --yolo
   cx -p personal -C /path/to/project -- --resume
 `;
 }
