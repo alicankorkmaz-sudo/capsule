@@ -157,6 +157,35 @@ describe("caps CLI", () => {
     expect(removedCapability.code).toBe(0);
   });
 
+  it("creates and edits hook commands", async () => {
+    const env = await makeTempEnv();
+
+    const missing = await cli(["catalog", "create", "autosave", "--kind", "hook", "--event", "SessionEnd"], env.ctx);
+    expect(missing.code).not.toBe(0);
+    expect(missing.stderr).toContain("--command is required");
+
+    const created = await cli(
+      ["catalog", "create", "autosave", "--kind", "hook", "--event", "SessionEnd", "--command", "./save.sh", "--timeout", "30", "--json"],
+      env.ctx
+    );
+    expect(created.code).toBe(0);
+    expect(json<Capability & { handlers: unknown[] }>(created).handlers).toEqual([
+      { type: "command", command: "./save.sh", timeout: 30 }
+    ]);
+
+    const edited = await cli(["catalog", "edit", "autosave", "--command", "./push.sh", "--json"], env.ctx);
+    expect(edited.code).toBe(0);
+    expect(json<Capability & { handlers: unknown[] }>(edited).handlers).toEqual([
+      { type: "command", command: "./push.sh" }
+    ]);
+    expect(json<Capability & { event: string }>(edited).event).toBe("SessionEnd");
+
+    const badTimeout = await cli(["catalog", "edit", "autosave", "--command", "./push.sh", "--timeout", "0"], env.ctx);
+    expect(badTimeout.code).not.toBe(0);
+    const orphanTimeout = await cli(["catalog", "edit", "autosave", "--timeout", "10"], env.ctx);
+    expect(orphanTimeout.stderr).toContain("--timeout needs --command");
+  });
+
   it("scans and imports existing configs by candidate id", async () => {
     const env = await makeTempEnv();
     await cli(["servers", "add", "demo", "--target", "claude-code-user", "--config", CONFIG], env.ctx);

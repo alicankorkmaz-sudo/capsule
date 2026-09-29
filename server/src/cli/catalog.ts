@@ -17,6 +17,8 @@ interface CapabilityFlags {
   rootPath?: string;
   event?: string;
   matcher?: string;
+  command?: string;
+  timeout?: string;
 }
 
 export function registerCatalogCommands(program: Command, getDeps: () => CliDeps): void {
@@ -69,6 +71,8 @@ export function registerCatalogCommands(program: Command, getDeps: () => CliDeps
     .option("--root-path <path>", "plugin root directory (kind: custom-plugin)")
     .option("--event <event>", "hook event (kind: hook)")
     .option("--matcher <matcher>", "hook matcher (kind: hook)")
+    .option("--command <command>", "shell command the hook runs (kind: hook)")
+    .option("--timeout <seconds>", "hook command timeout in seconds (kind: hook)")
     .action(async (name: string, options: CapabilityFlags & { kind: string }) => {
       const deps = getDeps();
       const kind = CapabilityKindSchema.parse(options.kind);
@@ -90,6 +94,8 @@ export function registerCatalogCommands(program: Command, getDeps: () => CliDeps
     .option("--content-file <path>", "content file")
     .option("--event <event>", "hook event")
     .option("--matcher <matcher>", "hook matcher")
+    .option("--command <command>", "replace the hook's handlers with this shell command")
+    .option("--timeout <seconds>", "hook command timeout in seconds (with --command)")
     .action(async (ref: string, options: CapabilityFlags & { name?: string }) => {
       const deps = getDeps();
       const id = await resolveCapabilityId(deps.profiles, ref);
@@ -106,6 +112,11 @@ export function registerCatalogCommands(program: Command, getDeps: () => CliDeps
         input.content = options.contentFile
           ? await fs.readFile(options.contentFile, "utf8")
           : options.content;
+      }
+      if (options.command !== undefined) {
+        input.handlers = [commandHandler(options)];
+      } else if (options.timeout !== undefined) {
+        throw new Error("--timeout needs --command.");
       }
       const capability = await deps.profiles.updateCapability(id, input);
       printResult(capability, deps.opts.json, deps.io, () => `Updated capability "${capability.name}".\n`);
@@ -236,13 +247,29 @@ async function buildCapabilityInput(
       break;
     case "hook":
       if (!options.event) throw new Error("--event is required for kind hook.");
+      if (!options.command) throw new Error("--command is required for kind hook.");
       input.event = options.event;
       input.matcher = options.matcher;
+      input.handlers = [commandHandler(options)];
       break;
     case "installed-plugin":
       throw new Error("Installed plugins are managed via: caps plugins sync");
   }
   return input;
+}
+
+function commandHandler(options: CapabilityFlags): Record<string, unknown> {
+  const command = options.command?.trim();
+  if (!command) throw new Error("--command must not be empty.");
+  const handler: Record<string, unknown> = { type: "command", command };
+  if (options.timeout !== undefined) {
+    const timeout = Number(options.timeout);
+    if (!Number.isInteger(timeout) || timeout <= 0) {
+      throw new Error("--timeout must be a positive whole number of seconds.");
+    }
+    handler.timeout = timeout;
+  }
+  return handler;
 }
 
 async function readContent(options: { content?: string; file?: string }): Promise<string> {

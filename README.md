@@ -81,6 +81,7 @@ caps profiles deactivate         # restore the project's original files
 caps servers list           # MCP servers across every target
 caps targets                # config files and their status
 caps catalog list           # every known capability
+caps catalog create autosave -k hook --event SessionEnd --command ./save.sh --timeout 30
 caps plugins sync           # pull installed Claude Code plugins into the catalog
 caps import scan            # find importable capabilities in existing configs
 caps backups list           # every backup Capsule has taken
