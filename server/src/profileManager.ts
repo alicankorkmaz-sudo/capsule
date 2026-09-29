@@ -1259,7 +1259,9 @@ function validateCapabilityInput(
 }
 
 function capabilityToInput(current: Capability, patch: Partial<CapabilityInput>): CapabilityInput {
-  return { ...current, ...patch, kind: current.kind, name: patch.name ?? current.name } as CapabilityInput;
+  // Unset fields keep their current value; only explicit values patch.
+  const defined = Object.fromEntries(Object.entries(patch).filter(([, value]) => value !== undefined));
+  return { ...current, ...defined, kind: current.kind, name: patch.name ?? current.name } as CapabilityInput;
 }
 
 function markProfilesPending(store: ProfileStore, capabilityId: string): void {
