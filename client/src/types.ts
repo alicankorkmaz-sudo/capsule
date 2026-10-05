@@ -44,6 +44,23 @@ export interface BackupEntry {
   sourcePath: string;
   reason: string;
   existed: boolean;
+  /** Size of the saved file contents. */
+  bytes?: number;
+  /** An original that deactivation restores; pruning never deletes it. */
+  protected?: boolean;
+}
+
+export interface PruneBackupsResult {
+  dryRun: boolean;
+  keep: number;
+  olderThanDays?: number;
+  scanned: number;
+  deletedCount: number;
+  keptCount: number;
+  protectedCount: number;
+  bytesFreed: number;
+  splitGroups: string[];
+  unreadable: string[];
 }
 
 export type CapabilityKind =
@@ -123,6 +140,34 @@ export interface ImportCandidate {
   sourcePath: string;
   summary?: string;
   warnings?: string[];
+}
+
+export type LaunchTarget = "claude" | "codex";
+
+export type DoctorSeverity = "error" | "warn" | "info";
+
+export interface DoctorIssue {
+  severity: DoctorSeverity;
+  code: string;
+  capabilityId?: string;
+  profileId?: string;
+  projectPath?: string;
+  message: string;
+  hint: string;
+}
+
+export type CapabilitySyncStatus = "updated" | "unchanged" | "missing" | "unlinked" | "failed";
+
+export interface CapabilitySyncResult {
+  id: string;
+  kind: CapabilityKind;
+  name: string;
+  sourcePath?: string;
+  status: CapabilitySyncStatus;
+  /** What differs from the stored snapshot: "content", "+file", "-file", "~file". */
+  changes: string[];
+  warnings: string[];
+  error?: string;
 }
 
 export interface LaunchResult {
