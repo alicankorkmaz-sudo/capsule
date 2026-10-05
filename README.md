@@ -102,6 +102,26 @@ npm start       # built server on :8787, serves the built client
 
 Applying a profile rewrites managed files, so Capsule backs up their prior contents
 first — `caps backups list`, then `caps backups restore <id>` or `restore-group <id>`.
+
+### Backup retention
+
+Each backup is one file in `~/.capsule/backups`. Retention works per source file:
+after every new backup, Capsule keeps the newest 20 of that file and deletes the
+rest. Set `CAPSULE_BACKUP_KEEP=<n>` to change the limit, or `0`/`off` to turn
+automatic pruning off. If automatic pruning fails, Capsule prints a warning and
+the write that triggered it still goes through.
+
+```bash
+caps backups prune --dry-run              # show what would go, delete nothing
+caps backups prune --keep 5 --yes         # keep the newest 5 per file
+caps backups prune --older-than 30 --yes  # only delete backups older than 30 days
+```
+
+Capsule never prunes the original backups it took when it first adopted a project
+(`caps profiles deactivate` restores those). They also don't count towards the
+limit. Retention counts each file on its own, so it can delete one half of a
+`restore-group` set and keep the other. `prune` lists any group that ends up
+split, and `restore-group` then restores only the backups that are left.
 ### Skipping permission prompts
 
 `--yolo` starts the agent with every confirmation turned off: it passes
