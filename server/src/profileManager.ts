@@ -49,6 +49,7 @@ import {
   readJsonFile,
   readTextIfExists,
   restoreBackup,
+  withPinnedBackups,
   writeJsonFileSafe,
   writeTextFileSafe
 } from "./storage";
@@ -590,36 +591,41 @@ export class ProfileManager {
       (await backupFile(this.ctx, preview.instructionsPath, `adopt ${resolvedProject}`, backupGroupId)).id
     ];
 
-    try {
-      await writeJsonFileSafe(
-        this.ctx,
-        preview.settingsPath,
-        JSON.parse(preview.outputs.settings),
-        `apply profile ${preview.profile.name}`
-      );
-      await writeTextFileSafe(
-        this.ctx,
-        preview.instructionsPath,
-        preview.outputs.instructions,
-        `apply profile ${preview.profile.name}`
-      );
-      await this.writeRuntime(resolvedProject, await this.compileProfile(profileId, resolvedProject));
-    } catch (err) {
-      await Promise.all(originalBackupIds.map((id) => restoreBackup(this.ctx, id).catch(() => undefined)));
-      throw err;
-    }
+    // Until the assignment below lands in profiles.json, nothing else marks
+    // the originals as protected — pin them so the backups taken by the
+    // writes in between cannot auto-prune them away.
+    return withPinnedBackups(originalBackupIds, async () => {
+      try {
+        await writeJsonFileSafe(
+          this.ctx,
+          preview.settingsPath,
+          JSON.parse(preview.outputs.settings),
+          `apply profile ${preview.profile.name}`
+        );
+        await writeTextFileSafe(
+          this.ctx,
+          preview.instructionsPath,
+          preview.outputs.instructions,
+          `apply profile ${preview.profile.name}`
+        );
+        await this.writeRuntime(resolvedProject, await this.compileProfile(profileId, resolvedProject));
+      } catch (err) {
+        await Promise.all(originalBackupIds.map((id) => restoreBackup(this.ctx, id).catch(() => undefined)));
+        throw err;
+      }
 
-    const assignment: ProjectAssignment = {
-      projectPath: resolvedProject,
-      profileId,
-      appliedHash: await this.projectHash(resolvedProject),
-      state: "applied",
-      originalBackupIds,
-      updatedAt: new Date().toISOString()
-    };
-    store.assignments[assignmentKey(resolvedProject)] = assignment;
-    await writeProfileStore(this.ctx, store, `assign profile ${preview.profile.name} to ${resolvedProject}`);
-    return assignment;
+      const assignment: ProjectAssignment = {
+        projectPath: resolvedProject,
+        profileId,
+        appliedHash: await this.projectHash(resolvedProject),
+        state: "applied",
+        originalBackupIds,
+        updatedAt: new Date().toISOString()
+      };
+      store.assignments[assignmentKey(resolvedProject)] = assignment;
+      await writeProfileStore(this.ctx, store, `assign profile ${preview.profile.name} to ${resolvedProject}`);
+      return assignment;
+    });
   }
 
   async deactivate(projectPath: string): Promise<void> {
