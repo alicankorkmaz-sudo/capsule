@@ -17,7 +17,8 @@ import {
   listProjects,
   migrateLegacyAppDir
 } from "./paths";
-import { TargetKeySchema } from "./types";
+import { LaunchTargetSchema, TargetKeySchema } from "./types";
+import { protectedBackupIds } from "./storage";
 import { runDoctor } from "./doctor";
 import type { RuntimeContext } from "./types";
 import { CapabilityKindSchema } from "./types";
@@ -54,6 +55,12 @@ const CopyServersBodySchema = MutatingBodySchema.extend({
 });
 
 const RestoreBodySchema = MutatingBodySchema;
+
+const PruneBackupsBodySchema = z.object({
+  keep: z.number().int().min(0).optional(),
+  olderThanDays: z.number().min(0).optional(),
+  dryRun: z.boolean().optional()
+});
 
 const ValidateBodySchema = z.object({
   config: z.unknown()
@@ -92,7 +99,9 @@ const ApplyBodySchema = z.object({
   projectPath: z.string(),
   confirmOwnership: z.boolean().optional(),
   force: z.boolean().optional(),
-  dryRun: z.boolean().optional()
+  dryRun: z.boolean().optional(),
+  target: LaunchTargetSchema.optional(),
+  yolo: z.boolean().optional()
 });
 
 const ImportCommitBodySchema = z.object({
@@ -191,7 +200,20 @@ export function buildServer(ctx: RuntimeContext = createRuntimeContext()): Fasti
     return manager.deleteServer(params.id, body?.allowElevated);
   });
 
-  app.get("/api/backups", async () => manager.listBackups());
+  // The list omits file contents (they can add up to megabytes) and marks the
+  // originals that deactivation restores, which pruning never deletes.
+  app.get("/api/backups", async () => {
+    const [entries, protectedIds] = await Promise.all([manager.listBackups(), protectedBackupIds(ctx)]);
+    return entries.map(({ contentBase64, ...entry }) => ({
+      ...entry,
+      bytes: contentBase64 ? Buffer.byteLength(contentBase64, "base64") : 0,
+      protected: protectedIds.has(entry.id)
+    }));
+  });
+
+  app.post("/api/backups/prune", async (request) => {
+    return manager.pruneBackups(PruneBackupsBodySchema.parse(request.body ?? {}));
+  });
 
   app.post("/api/backups/:id/restore", async (request, reply) => {
     const params = z.object({ id: z.string() }).parse(request.params);
