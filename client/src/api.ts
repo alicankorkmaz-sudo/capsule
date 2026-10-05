@@ -309,6 +309,10 @@ async function readResponse<T>(response: Response): Promise<T> {
   const text = await response.text();
   const value = text ? JSON.parse(text) : undefined;
   if (!response.ok) {
+    // Fastify's own 404 for an unknown route means the page is newer than the running server.
+    if (response.status === 404 && typeof value?.message === "string" && value.message.startsWith("Route ")) {
+      throw new Error("The running Capsule server is older than this page and does not have this feature yet. Restart it (npm start) to pick up the update.");
+    }
     throw new Error(value?.error || value?.errors?.join(", ") || response.statusText);
   }
   return value as T;

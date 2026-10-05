@@ -181,11 +181,18 @@ npm start       # built server on :8787, serves the built client
 
 The web UI covers the same ground as the CLI:
 
-- **Projects** — pick a project, see the capabilities its profile resolves to
-  (inherited ones marked with their source), reapply a profile that is pending or
-  drifted, and launch Claude Code or Codex, optionally skipping permission prompts.
-- **Profiles** — each card shows what the profile extends, which profiles build on
-  it, and how many projects need a reapply. A profile that is still extended or
+- **Projects** — a searchable project list (any folder can be opened by path)
+  next to the selected project's flow: pick a profile, review what applying
+  writes into the project (instructions and hooks) versus what only a Capsule
+  launch loads (MCP servers, plugins, skills), preview the generated files, then
+  apply or launch Claude Code / Codex. Existing local files are kept as the
+  originals that Deactivate restores; hand-edited files ask before being replaced.
+- **Profiles** — start a new profile blank, by extending one, by copying one, or
+  by capturing a project's current setup. The editor shows the catalog next to
+  what the profile contains, inherited items included. Creating from a project
+  can apply it there right away, and saving an edit can reapply it to every
+  project that uses it. Cards show lineage, a copy action, and a one-click
+  reapply for out-of-date projects; a profile that is still extended or
   assigned cannot be deleted.
 - **Catalog** — search, filter unused capabilities, and **Sync sources** to preview
   and pull changes into skills and instructions linked to a source file.
