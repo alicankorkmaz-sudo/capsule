@@ -82,6 +82,8 @@ caps servers list           # MCP servers across every target
 caps targets                # config files and their status
 caps catalog list           # every known capability
 caps catalog create autosave -k hook --event SessionEnd --command ./save.sh --timeout 30
+caps catalog create review -k skill --from-dir ~/.claude/skills/review
+caps catalog sync           # refresh skills/instructions from their linked sources
 caps plugins sync           # pull installed Claude Code plugins into the catalog
 caps import scan            # find importable capabilities in existing configs
 caps backups list           # every backup Capsule has taken
@@ -90,6 +92,31 @@ caps backups list           # every backup Capsule has taken
 Global flags: `-C <path>` (project directory), `--json`, `-y`, `--elevated`.
 
 Run `caps <command> --help` for the full surface.
+
+### Skills and source links
+
+A skill is more than its `SKILL.md`: import and `caps catalog create/edit --from-dir <dir>`
+also capture every other text file in the skill directory (recursively) and write them
+back next to `SKILL.md` when a profile is applied. Dotfiles, dot-directories and
+`node_modules` are ignored; binary files and files over 512 KiB are skipped with a
+warning. `caps catalog get <skill>` lists the captured files.
+
+Catalog entries are snapshots: applying a profile always uses the stored copy. Skills
+and instructions remember where they came from in `sourcePath` (the skill directory,
+or the instruction file). Import, `--from-dir` and `--content-file` set it
+automatically; `--source <path>` sets it explicitly and `--no-source` removes it.
+Entries created before source links existed have none until you add one.
+
+```bash
+caps catalog sync                 # every linked skill/instruction
+caps catalog sync review --dry-run
+caps catalog edit review --source ~/.claude/skills/review
+```
+
+`sync` re-reads each source and reports it as updated, unchanged or source missing;
+updated capabilities mark the profiles using them pending re-apply. A missing source is
+only reported — sync never deletes a capability. It exits non-zero only when every
+requested capability failed to sync (missing source, or nothing linked).
 
 ### Web UI
 

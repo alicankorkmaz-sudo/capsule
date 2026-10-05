@@ -251,6 +251,7 @@ export interface CapabilityDraft {
   rootPath?: string;
   content?: string;
   files?: Record<string, string>;
+  sourcePath?: string | null;
   event?: string;
   matcher?: string;
   handlers?: unknown[];

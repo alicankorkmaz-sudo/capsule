@@ -17,6 +17,7 @@ import type {
 } from "./types";
 import { CapabilityKindSchema, HookHandlerSchema, McpServerConfigSchema } from "./types";
 import { McpManager } from "./manager";
+import { isNotFound, readCapabilitySource, readSkillDirectory, skippedWarnings } from "./capabilitySource";
 import {
   assignmentKey,
   capabilityFingerprint,
@@ -94,9 +95,25 @@ export interface CapabilityInput {
   rootPath?: string;
   content?: string;
   files?: Record<string, string>;
+  /** Skill/instruction source to link; `null` clears an existing link on update. */
+  sourcePath?: string | null;
   event?: string;
   matcher?: string;
   handlers?: unknown[];
+}
+
+export type CapabilitySyncStatus = "updated" | "unchanged" | "missing" | "unlinked" | "failed";
+
+export interface CapabilitySyncResult {
+  id: string;
+  kind: CapabilityKind;
+  name: string;
+  sourcePath?: string;
+  status: CapabilitySyncStatus;
+  /** What differs from the stored snapshot: "content", "+file", "-file", "~file". */
+  changes: string[];
+  warnings: string[];
+  error?: string;
 }
 
 export interface ProfileInput {
@@ -122,6 +139,8 @@ export interface ImportCandidate {
   name: string;
   sourcePath: string;
   summary?: string;
+  /** Problems found while reading the source, e.g. skill files that were skipped. */
+  warnings?: string[];
 }
 
 interface ImportDescriptor {
@@ -180,7 +199,12 @@ export class ProfileManager {
     const equivalent = Object.values(store.capabilities).find(
       (existing) => capabilityFingerprint(existing) === capabilityFingerprint(item)
     );
-    if (equivalent) return maskCapability(equivalent);
+    if (equivalent) {
+      if (adoptSourcePath(equivalent, item)) {
+        await writeProfileStore(this.ctx, store, `link ${equivalent.kind} capability ${equivalent.name}`);
+      }
+      return maskCapability(equivalent);
+    }
     store.capabilities[item.id] = item;
     await writeProfileStore(this.ctx, store, `create ${item.kind} capability ${item.name}`);
     return maskCapability(item);
@@ -201,6 +225,7 @@ export class ProfileManager {
       (existing) => existing.id !== id && capabilityFingerprint(existing) === capabilityFingerprint(next)
     );
     if (equivalent) {
+      adoptSourcePath(equivalent, next);
       replaceCapabilityReferences(store, id, equivalent.id);
       delete store.capabilities[id];
       await writeProfileStore(this.ctx, store, `merge duplicate ${next.kind} capability ${next.name}`);
@@ -813,6 +838,81 @@ export class ProfileManager {
     return undefined;
   }
 
+  /**
+   * Refresh skill/instruction snapshots from the files they were taken from.
+   * With no ids, every capability that has a source link is synced. Sources are
+   * only ever read; a missing source is reported, never acted on, so a sync
+   * cannot delete a capability. Apply keeps using the stored snapshot.
+   */
+  async syncCapabilities(
+    ids: string[] = [],
+    options: { dryRun?: boolean } = {}
+  ): Promise<CapabilitySyncResult[]> {
+    const store = await readProfileStore(this.ctx);
+    const targets = ids.length
+      ? ids.map((id) => {
+          const item = store.capabilities[id];
+          if (!item) throw new Error(`Capability not found: ${id}`);
+          return item;
+        })
+      : listCapabilities(store).filter(
+          (item) => (item.kind === "skill" || item.kind === "instruction") && Boolean(item.sourcePath)
+        );
+
+    const results: CapabilitySyncResult[] = [];
+    const now = new Date().toISOString();
+    let changed = false;
+    for (const item of targets) {
+      const result: CapabilitySyncResult = {
+        id: item.id,
+        kind: item.kind,
+        name: item.name,
+        status: "unchanged",
+        changes: [],
+        warnings: []
+      };
+      results.push(result);
+      if ((item.kind !== "skill" && item.kind !== "instruction") || !item.sourcePath) {
+        result.status = "unlinked";
+        result.error =
+          item.kind === "skill" || item.kind === "instruction"
+            ? "No source path; link one with: caps catalog edit <capability> --source <path>"
+            : `Only skills and instructions can be synced, not ${item.kind}.`;
+        continue;
+      }
+      result.sourcePath = item.sourcePath;
+      let snapshot;
+      try {
+        snapshot = await readCapabilitySource(item.kind, item.sourcePath);
+      } catch (err) {
+        const missing = isNotFound(err);
+        result.status = missing ? "missing" : "failed";
+        const detail = errorMessage(err);
+        result.error = !missing
+          ? detail
+          : detail.startsWith("No SKILL.md")
+            ? "SKILL.md not found in the source directory"
+            : "Source path does not exist";
+        continue;
+      }
+      result.warnings = snapshot.warnings;
+      result.changes = diffSnapshot(item, snapshot, snapshot.files ? "SKILL.md" : "content");
+      if (!result.changes.length) continue;
+      result.status = "updated";
+      if (options.dryRun) continue;
+      item.content = snapshot.content;
+      if (item.kind === "skill" && snapshot.files) item.files = snapshot.files;
+      item.updatedAt = now;
+      markProfilesPending(store, item.id);
+      changed = true;
+    }
+    if (changed) {
+      const updated = results.filter((result) => result.status === "updated").length;
+      await writeProfileStore(this.ctx, store, `sync ${updated} capabilit${updated === 1 ? "y" : "ies"} from source`);
+    }
+    return results;
+  }
+
   async scanImport(projectPath?: string): Promise<ImportCandidate[]> {
     this.importCandidates.clear();
     return this.scanSources(projectPath ? [path.resolve(projectPath)] : [], true, true);
@@ -928,17 +1028,19 @@ export class ProfileManager {
     for (const candidate of candidates) {
       const descriptor = this.importCandidates.get(candidate.id);
       if (!descriptor) continue;
+      const warnings: string[] = [];
       const preview = await this.materializeImportCapability(
         descriptor,
         installedPlugins,
         candidate.id,
-        "1970-01-01T00:00:00.000Z"
+        "1970-01-01T00:00:00.000Z",
+        warnings
       );
       if (!preview) continue;
       const fingerprint = capabilityFingerprint(preview);
       if (seenFingerprints.has(fingerprint)) continue;
       seenFingerprints.add(fingerprint);
-      uniqueCandidates.push(candidate);
+      uniqueCandidates.push(warnings.length ? { ...candidate, warnings } : candidate);
     }
     return uniqueCandidates;
   }
@@ -992,6 +1094,10 @@ export class ProfileManager {
           store.capabilities[id] = item;
         }
       }
+      // Entries imported before source links existed (or reused by
+      // fingerprint) pick up the link the first time they are imported again.
+      const linked = descriptorSourcePath(descriptor);
+      if (linked) adoptSourcePath(item, { kind: descriptor.kind, sourcePath: linked });
       capabilityIds.push(item.id);
     }
     return unique(capabilityIds);
@@ -1001,7 +1107,8 @@ export class ProfileManager {
     descriptor: ImportDescriptor,
     installed: InstalledPlugin[],
     id: string,
-    now: string
+    now: string,
+    warnings: string[] = []
   ): Promise<Capability | undefined> {
     const base = {
       id,
@@ -1033,11 +1140,16 @@ export class ProfileManager {
       };
     }
     if (descriptor.kind === "skill") {
+      const skillDir = path.resolve(path.dirname(String(descriptor.meta.skillPath)));
+      const skill = await readSkillDirectory(skillDir);
+      warnings.push(...skippedWarnings(skillDir, skill.skipped));
       return {
         ...base,
         kind: "skill",
         name: descriptor.name,
-        content: await fs.readFile(String(descriptor.meta.skillPath), "utf8")
+        content: skill.content,
+        files: skill.files,
+        sourcePath: skillDir
       };
     }
     if (descriptor.kind === "instruction") {
@@ -1045,7 +1157,8 @@ export class ProfileManager {
         ...base,
         kind: "instruction",
         name: `${descriptor.name} (${path.basename(path.dirname(descriptor.sourcePath))})`,
-        content: await fs.readFile(String(descriptor.meta.instructionPath), "utf8")
+        content: await fs.readFile(String(descriptor.meta.instructionPath), "utf8"),
+        sourcePath: path.resolve(String(descriptor.meta.instructionPath))
       };
     }
     if (descriptor.kind === "hook") {
@@ -1244,7 +1357,13 @@ function validateCapabilityInput(
     case "custom-plugin":
       return { ...base, kind, rootPath: requiredValue(input.rootPath ?? "", "Custom plugin path") };
     case "skill":
-      return { ...base, kind, content: input.content ?? "", files: input.files ?? {} };
+      return {
+        ...base,
+        kind,
+        content: input.content ?? "",
+        files: input.files ?? {},
+        sourcePath: cleanSourcePath(input.sourcePath)
+      };
     case "hook":
       return {
         ...base,
@@ -1254,8 +1373,52 @@ function validateCapabilityInput(
         handlers: (input.handlers ?? []).map((handler) => HookHandlerSchema.parse(handler))
       };
     case "instruction":
-      return { ...base, kind, content: input.content ?? "" };
+      return { ...base, kind, content: input.content ?? "", sourcePath: cleanSourcePath(input.sourcePath) };
   }
+}
+
+function cleanSourcePath(value: string | null | undefined): string | undefined {
+  const clean = cleanOptional(value ?? undefined);
+  return clean ? path.resolve(clean) : undefined;
+}
+
+/** Where an import descriptor's snapshot can be refreshed from, if anywhere. */
+function descriptorSourcePath(descriptor: ImportDescriptor): string | undefined {
+  if (descriptor.kind === "skill") return path.resolve(path.dirname(String(descriptor.meta.skillPath)));
+  if (descriptor.kind === "instruction") return path.resolve(String(descriptor.meta.instructionPath));
+  return undefined;
+}
+
+/**
+ * Copy a source link onto a catalog entry that has none. Used when a new or
+ * edited capability collapses into an equivalent existing one, so the link the
+ * user just asked for is not silently dropped. Returns whether it changed.
+ */
+function adoptSourcePath(target: Capability, from: { kind: CapabilityKind; sourcePath?: string | null }): boolean {
+  if (target.kind !== "skill" && target.kind !== "instruction") return false;
+  if (from.kind !== target.kind || !from.sourcePath || target.sourcePath) return false;
+  target.sourcePath = from.sourcePath;
+  return true;
+}
+
+/** Lists what a fresh source snapshot changes compared with the stored one. */
+function diffSnapshot(
+  current: { content: string; files?: Record<string, string> },
+  next: { content: string; files?: Record<string, string> },
+  contentLabel: string
+): string[] {
+  const changes: string[] = [];
+  if (current.content !== next.content) changes.push(contentLabel);
+  if (!next.files) return changes;
+  const before = current.files ?? {};
+  for (const [filePath, content] of Object.entries(next.files)) {
+    if (!(filePath in before)) changes.push(`+${filePath}`);
+    else if (before[filePath] !== content) changes.push(`~${filePath}`);
+  }
+  for (const filePath of Object.keys(before)) {
+    if (!(filePath in next.files)) changes.push(`-${filePath}`);
+  }
+  return changes;
 }
 
 function capabilityToInput(current: Capability, patch: Partial<CapabilityInput>): CapabilityInput {

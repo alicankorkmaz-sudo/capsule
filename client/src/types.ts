@@ -67,6 +67,7 @@ export interface Capability {
   rootPath?: string;
   content?: string;
   files?: Record<string, string>;
+  sourcePath?: string;
   event?: string;
   matcher?: string;
   handlers?: Array<Record<string, unknown>>;
@@ -117,6 +118,7 @@ export interface ImportCandidate {
   name: string;
   sourcePath: string;
   summary?: string;
+  warnings?: string[];
 }
 
 export interface LaunchResult {
