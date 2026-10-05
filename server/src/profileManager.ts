@@ -12,6 +12,7 @@ import type {
   LaunchTarget,
   Profile,
   ProfileStore,
+  ProfileSummary,
   ProjectAssignment,
   RuntimeContext
 } from "./types";
@@ -34,6 +35,12 @@ import {
   writeProfileStore,
   writeWorkspaceFile
 } from "./profileStorage";
+import {
+  assertValidExtends,
+  directChildren,
+  effectiveCapabilityIds,
+  selfAndDescendants
+} from "./profileInheritance";
 import {
   backupExists,
   backupFile,
@@ -103,6 +110,8 @@ export interface ProfileInput {
   name: string;
   description?: string;
   capabilityIds?: string[];
+  /** Parent profile ids; replaces the current list when given. */
+  extends?: string[];
 }
 
 export interface ApplyPreview {
@@ -144,7 +153,7 @@ export class ProfileManager {
     const assignments = await this.assignmentStatuses(store);
     return {
       capabilities: listCapabilities(store).map(maskCapability),
-      profiles: listProfiles(store),
+      profiles: listProfiles(store).map((profile) => summarizeProfile(store, profile)),
       assignments,
       selectedAssignment: projectPath
         ? assignments.find((item) => item.projectPath === path.resolve(projectPath))
@@ -236,7 +245,9 @@ export class ProfileManager {
       createdAt: now,
       updatedAt: now
     };
+    setExtends(profile, input.extends);
     assertUniqueProfileName(store, profile.name);
+    assertValidExtends(store.profiles, profile);
     store.profiles[profile.id] = profile;
     await writeProfileStore(this.ctx, store, `create profile ${profile.name}`);
     return profile;
@@ -257,11 +268,12 @@ export class ProfileManager {
       capabilityIds,
       updatedAt: new Date().toISOString()
     };
+    if (input.extends !== undefined) setExtends(next, input.extends);
     assertUniqueProfileName(store, next.name, id);
+    assertValidExtends(store.profiles, next);
     store.profiles[id] = next;
-    for (const assignment of Object.values(store.assignments)) {
-      if (assignment.profileId === id) assignment.state = "pending";
-    }
+    // Every profile inheriting from this one compiles differently now too.
+    markAssignmentsPending(store, selfAndDescendants(store.profiles, id));
     await writeProfileStore(this.ctx, store, `update profile ${next.name}`);
     return next;
   }
@@ -271,6 +283,14 @@ export class ProfileManager {
     const profile = store.profiles[id];
     if (!profile) throw new Error("Profile not found.");
     if (profile.system) throw new Error("The Vanilla system profile cannot be deleted.");
+    const children = directChildren(store.profiles, id);
+    if (children.length) {
+      const names = children.map((child) => `"${child.name}"`).join(", ");
+      throw new Error(
+        `Profile "${profile.name}" is extended by ${names}. Remove it from their extends first ` +
+          `(caps profiles edit <profile> --remove-extends "${profile.name}").`
+      );
+    }
     const assigned = Object.values(store.assignments).filter((item) => item.profileId === id);
     if (assigned.length) throw new Error("Deactivate or switch projects using this profile first.");
     delete store.profiles[id];
@@ -395,6 +415,9 @@ export class ProfileManager {
     const store = await readProfileStore(this.ctx);
     const profile = store.profiles[profileId];
     if (!profile) throw new Error("Profile not found.");
+    // Strict: a missing parent or an inheritance cycle fails the compile
+    // instead of silently applying a partial profile.
+    const capabilityIds = effectiveCapabilityIds(store.profiles, profileId, { strict: true });
     const settings: Record<string, unknown> = {};
     const hooks: Record<string, unknown[]> = {};
     const instructions: string[] = [];
@@ -416,7 +439,7 @@ export class ProfileManager {
       return livePlugins.find((plugin) => plugin.id === pluginId);
     };
 
-    for (const capabilityId of profile.capabilityIds) {
+    for (const capabilityId of capabilityIds) {
       const item = store.capabilities[capabilityId];
       if (!item) throw new Error(`Profile references missing capability: ${capabilityId}`);
       switch (item.kind) {
@@ -501,11 +524,12 @@ export class ProfileManager {
     const runtimeDir = this.projectRuntimeDir(projectPath);
     const syntheticPluginDir = skills.length ? path.join(runtimeDir, "profile-skills") : undefined;
     if (syntheticPluginDir) pluginDirs.push(syntheticPluginDir);
-    if (profile.system === "vanilla" && profile.capabilityIds.length) {
+    if (profile.system === "vanilla" && capabilityIds.length) {
       warnings.push("Vanilla ignores capability references and always launches in safe mode.");
     }
     return {
       profile,
+      effectiveCapabilityIds: capabilityIds,
       settings,
       instructions: instructions.length
         ? `# Profile: ${profile.name}\n\n${instructions.join("\n\n")}\n`
@@ -1092,7 +1116,7 @@ export class ProfileManager {
         description: `Generated skills for ${compiled.profile.name}`
       });
       const store = await readProfileStore(this.ctx);
-      for (const id of compiled.profile.capabilityIds) {
+      for (const id of compiled.effectiveCapabilityIds) {
         const item = store.capabilities[id];
         if (!item || item.kind !== "skill") continue;
         const skillRoot = path.join(compiled.syntheticPluginDir, "skills", safeName(item.name));
@@ -1264,12 +1288,20 @@ function capabilityToInput(current: Capability, patch: Partial<CapabilityInput>)
   return { ...current, ...defined, kind: current.kind, name: patch.name ?? current.name } as CapabilityInput;
 }
 
+/** Marks assignments pending for every profile that applies `capabilityId`,
+ *  including profiles that only inherit it from a parent. */
 function markProfilesPending(store: ProfileStore, capabilityId: string): void {
   const profileIds = new Set(
     Object.values(store.profiles)
-      .filter((profile) => profile.capabilityIds.includes(capabilityId))
+      .filter((profile) =>
+        effectiveCapabilityIds(store.profiles, profile.id, { strict: false }).includes(capabilityId)
+      )
       .map((profile) => profile.id)
   );
+  markAssignmentsPending(store, profileIds);
+}
+
+function markAssignmentsPending(store: ProfileStore, profileIds: Set<string>): void {
   for (const assignment of Object.values(store.assignments)) {
     if (profileIds.has(assignment.profileId)) assignment.state = "pending";
   }
@@ -1281,10 +1313,25 @@ function replaceCapabilityReferences(store: ProfileStore, fromId: string, toId: 
     profile.capabilityIds = unique(
       profile.capabilityIds.map((capabilityId) => capabilityId === fromId ? toId : capabilityId)
     );
-    for (const assignment of Object.values(store.assignments)) {
-      if (assignment.profileId === profile.id) assignment.state = "pending";
-    }
+    markAssignmentsPending(store, selfAndDescendants(store.profiles, profile.id));
   }
+}
+
+/** Sets or clears a profile's parents. An empty list removes the field so a
+ *  profile without parents keeps the pre-inheritance shape on disk. */
+function setExtends(profile: Profile, parents: string[] | undefined): void {
+  const clean = unique((parents ?? []).map((id) => id.trim()).filter(Boolean));
+  if (clean.length) profile.extends = clean;
+  else delete profile.extends;
+}
+
+function summarizeProfile(store: ProfileStore, profile: Profile): ProfileSummary {
+  return {
+    ...profile,
+    extends: profile.extends ?? [],
+    // Lenient: listing must keep working on a damaged store so it can be fixed.
+    effectiveCapabilityIds: effectiveCapabilityIds(store.profiles, profile.id, { strict: false })
+  };
 }
 
 function validateReferences(store: ProfileStore, ids: string[]): void {

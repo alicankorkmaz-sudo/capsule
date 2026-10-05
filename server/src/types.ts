@@ -223,9 +223,19 @@ export interface Profile {
   name: string;
   description?: string;
   capabilityIds: string[];
+  /** Parent profile ids. Their effective capabilities come first, then this
+   *  profile's own `capabilityIds`. Absent on profiles that extend nothing. */
+  extends?: string[];
   system?: "vanilla";
   createdAt: string;
   updatedAt: string;
+}
+
+/** A profile as listed to callers: `extends` always present, plus the
+ *  resolved capability list it would apply. */
+export interface ProfileSummary extends Profile {
+  extends: string[];
+  effectiveCapabilityIds: string[];
 }
 
 export type AssignmentState = "pending" | "applied" | "drifted";
@@ -256,6 +266,8 @@ export interface InstalledPlugin {
 
 export interface CompiledProfile {
   profile: Profile;
+  /** Inherited capabilities followed by the profile's own, de-duplicated. */
+  effectiveCapabilityIds: string[];
   settings: Record<string, unknown>;
   instructions: string;
   mcpConfig: { mcpServers: Record<string, Record<string, unknown>> };

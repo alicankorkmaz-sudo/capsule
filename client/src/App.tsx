@@ -301,6 +301,7 @@ export function App() {
         <ProfileEditor
           item={editor.item}
           capabilities={overview.capabilities}
+          profiles={overview.profiles}
           onClose={() => setEditor(null)}
           onSave={(draft) => void run(async () => {
             if (editor.item) await updateProfile(editor.item.id, draft);
@@ -449,7 +450,9 @@ function ProfilesView(props: {
   onDelete: (item: Profile) => void;
 }) {
   return <div className="cardGrid">{props.profiles.map((profile) => {
-    const items = props.capabilities.filter((item) => profile.capabilityIds.includes(item.id));
+    const effective = profile.effectiveCapabilityIds ?? profile.capabilityIds;
+    const items = props.capabilities.filter((item) => effective.includes(item.id));
+    const parentNames = (profile.extends ?? []).map((id) => props.profiles.find((candidate) => candidate.id === id)?.name ?? id);
     const projectCount = props.assignments.filter((item) => item.profileId === profile.id).length;
     return <article className="profileCard" key={profile.id}>
       <div className="cardTop"><span className={`largeGlyph ${profile.system ? "vanilla" : ""}`}>{profile.system ? <Sparkles /> : <Settings2 />}</span><div className="cardActions">
@@ -457,6 +460,7 @@ function ProfilesView(props: {
         {!profile.system && <button className="iconBtn danger" onClick={() => props.onDelete(profile)}><Trash2 size={15} /></button>}
       </div></div>
       <h3>{profile.name}</h3><p>{profile.description || "No description"}</p>
+      {parentNames.length > 0 && <p><small>Extends {parentNames.join(", ")}</small></p>}
       <div className="chips">{items.slice(0, 5).map((item) => <KindChip key={item.id} item={item} />)}{items.length > 5 && <span className="moreChip">+{items.length - 5}</span>}</div>
       <footer><span>{items.length} capabilities</span><span>{projectCount} projects</span></footer>
     </article>;
@@ -537,10 +541,14 @@ function CapabilityEditor(props: { item?: Capability; initialKind?: CapabilityKi
   </Drawer>;
 }
 
-function ProfileEditor(props: { item?: Profile; capabilities: Capability[]; onClose: () => void; onSave: (draft: { name: string; description?: string; capabilityIds: string[] }) => void }) {
+function ProfileEditor(props: { item?: Profile; capabilities: Capability[]; profiles: Profile[]; onClose: () => void; onSave: (draft: { name: string; description?: string; capabilityIds: string[]; extends: string[] }) => void }) {
   const [name, setName] = useState(props.item?.name ?? "");
   const [description, setDescription] = useState(props.item?.description ?? "");
   const [selected, setSelected] = useState<string[]>(props.item?.capabilityIds ?? []);
+  const [parents, setParents] = useState<string[]>(props.item?.extends ?? []);
+  // System profiles cannot be extended; the server also rejects cycles.
+  const parentCandidates = props.profiles.filter((profile) => !profile.system && profile.id !== props.item?.id);
+  const toggleParent = (id: string) => setParents((values) => values.includes(id) ? values.filter((value) => value !== id) : [...values, id]);
   const [query, setQuery] = useState("");
   const [kindFilter, setKindFilter] = useState<CapabilityKind | "all">("all");
   const [selectedOnly, setSelectedOnly] = useState(false);
@@ -560,13 +568,17 @@ function ProfileEditor(props: { item?: Profile; capabilities: Capability[]; onCl
   return <Drawer title={props.item ? "Edit profile" : "New profile"} onClose={props.onClose} wide>
     <label className="field"><span>Name</span><input value={name} onChange={(e) => setName(e.target.value)} placeholder="Work" /></label>
     <label className="field"><span>Description</span><input value={description} onChange={(e) => setDescription(e.target.value)} placeholder="What this profile is for" /></label>
+    {parentCandidates.length > 0 && <section className="profileCapabilityPicker">
+      <div className="profileCapabilityHeader"><div><strong>Extends</strong><small>Inherit every capability of these profiles · {parents.length} selected</small></div></div>
+      <div className="profileCapabilityFilters">{parentCandidates.map((profile) => <button key={profile.id} className={parents.includes(profile.id) ? "active" : ""} aria-pressed={parents.includes(profile.id)} onClick={() => toggleParent(profile.id)}>{profile.name}</button>)}</div>
+    </section>}
     <section className="profileCapabilityPicker">
       <div className="profileCapabilityHeader"><div><strong>Capabilities</strong><small>{visible.length} of {props.capabilities.length} shown · {selected.length} selected</small></div>{selected.length > 0 && <button onClick={() => setSelected([])}>Clear selection</button>}</div>
       <div className="capabilitySearchRow"><label><Search size={15} /><input aria-label="Search capabilities" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search by name, type, or source…" />{query && <button aria-label="Clear search" onClick={() => setQuery("")}><X size={14} /></button>}</label><button className={selectedOnly ? "active" : ""} aria-pressed={selectedOnly} onClick={() => setSelectedOnly((value) => !value)}><Check size={14} />Selected only</button></div>
       <div className="profileCapabilityFilters"><button className={kindFilter === "all" ? "active" : ""} onClick={() => setKindFilter("all")}>All <span>{props.capabilities.length}</span></button>{kinds.map((kind) => <button key={kind} className={kindFilter === kind ? "active" : ""} onClick={() => setKindFilter(kind)}>{KIND_META[kind].label}<span>{props.capabilities.filter((item) => item.kind === kind).length}</span></button>)}</div>
       <div className="selectionList profileSelectionList">{visible.length ? visible.map((item) => { const meta = KIND_META[item.kind]; const Icon = meta.icon; const isSelected = selected.includes(item.id); return <button className={isSelected ? "selected" : ""} key={item.id} onClick={() => toggle(item.id)}><span className={`kindIcon ${meta.color}`}><Icon size={16} /></span><span><strong>{item.name}</strong><small><span>{meta.label}</span>{item.description && <> · {item.description}</>}</small></span><span className="checkBox">{isSelected && <Check size={14} />}</span></button>; }) : <div className="emptyState compact">No capabilities match these filters.</div>}</div>
     </section>
-    <div className="drawerFooter"><button className="secondaryBtn" onClick={props.onClose}>Cancel</button><button className="primaryBtn" disabled={!name.trim()} onClick={() => props.onSave({ name, description, capabilityIds: selected })}><Save size={16} />Save profile</button></div>
+    <div className="drawerFooter"><button className="secondaryBtn" onClick={props.onClose}>Cancel</button><button className="primaryBtn" disabled={!name.trim()} onClick={() => props.onSave({ name, description, capabilityIds: selected, extends: parents })}><Save size={16} />Save profile</button></div>
   </Drawer>;
 }
 

@@ -63,8 +63,27 @@ export async function readProfileStore(ctx: RuntimeContext): Promise<ProfileStor
   store.assignments ??= {};
   if (!store.profiles.vanilla) store.profiles.vanilla = initial.profiles.vanilla;
   if (!store.profiles.personal) store.profiles.personal = initial.profiles.personal;
+  normalizeProfileExtends(store);
   deduplicateCapabilities(store);
   return store;
+}
+
+/**
+ * `extends` is an optional, additive field, so the store stays at version 1:
+ * stores written before inheritance existed simply have no `extends` and load
+ * unchanged. Malformed values are dropped, empty lists are removed so profiles
+ * without parents keep their original shape, and system profiles never carry
+ * parents (Vanilla must stay empty).
+ */
+function normalizeProfileExtends(store: ProfileStore): void {
+  for (const profile of Object.values(store.profiles)) {
+    if (profile.extends === undefined) continue;
+    const parents = Array.isArray(profile.extends)
+      ? [...new Set(profile.extends.filter((id): id is string => typeof id === "string" && id.length > 0))]
+      : [];
+    if (profile.system || !parents.length) delete profile.extends;
+    else profile.extends = parents;
+  }
 }
 
 export async function writeProfileStore(

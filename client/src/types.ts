@@ -79,6 +79,10 @@ export interface Profile {
   name: string;
   description?: string;
   capabilityIds: string[];
+  /** Parent profile ids; their capabilities are inherited before this profile's own. */
+  extends?: string[];
+  /** Resolved inherited + own capabilities, as listed by the overview. */
+  effectiveCapabilityIds?: string[];
   system?: "vanilla";
   createdAt: string;
   updatedAt: string;
