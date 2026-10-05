@@ -90,13 +90,14 @@ type CatalogFilter = CapabilityKind | "all" | "unused";
 type LaunchOptions = { target: LaunchTarget; yolo: boolean };
 type Editor =
   | { type: "capability"; item?: Capability; kind?: CapabilityKind }
-  | { type: "profile"; item?: Profile }
+  | { type: "profile"; item?: Profile; startFrom?: { mode: "copy" | "extend"; profileId: string }; applyTo?: string }
   | { type: "import"; candidates?: ImportCandidate[] }
   | { type: "folder-import"; folderPath: string }
   | { type: "plugin"; item: Capability; files: string[]; selected?: string; content?: string }
   | { type: "apply"; preview: ApplyPreview; action: "apply" | "launch"; launch: LaunchOptions }
   | { type: "sync"; ids?: string[] }
   | { type: "prune" };
+type Notice = { text: string; tone?: "success" | "warn"; action?: { label: string; onClick: () => void } };
 type Confirmation = { title: string; body: React.ReactNode; confirmLabel: string; danger?: boolean; onConfirm: () => void };
 
 const KIND_META: Record<CapabilityKind, { label: string; icon: typeof Plug; color: string }> = {
@@ -137,7 +138,9 @@ export function App() {
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [notice, setNotice] = useState<string | null>(null);
+  const [notice, setNoticeState] = useState<Notice | null>(null);
+  const [selectedProfileId, setSelectedProfileId] = useState("");
+  const setNotice = (value: string | Notice | null) => setNoticeState(typeof value === "string" ? { text: value } : value);
 
   const load = async (nextProjectPath = projectPath) => {
     setLoading(true);
@@ -171,18 +174,25 @@ export function App() {
   }, [projectPath]);
 
   const assignment = overview.assignments.find((item) => item.projectPath === projectPath);
-  const assignedProfile = overview.profiles.find((profile) => profile.id === assignment?.profileId);
-  const projectOptions = useMemo(() => mergeProjects(projects, overview.assignments), [projects, overview.assignments]);
+  const projectOptions = useMemo(() => mergeProjects(projects, overview.assignments, projectPath), [projects, overview.assignments, projectPath]);
   const attention = (issues ?? []).filter((issue) => issue.severity !== "info");
 
-  const run = async (operation: () => Promise<void>, success?: string) => {
+  // A project with a profile shows it; otherwise keep the last pick, so one
+  // profile can be applied to several projects in a row.
+  useEffect(() => {
+    if (assignment) setSelectedProfileId(assignment.profileId);
+    else setSelectedProfileId((previous) => overview.profiles.some((profile) => profile.id === previous) ? previous : defaultProfileId(overview));
+  }, [projectPath, assignment?.profileId, overview.profiles]);
+
+  const run = async (operation: () => Promise<unknown>, success?: string) => {
     setBusy(true);
     setError(null);
     setNotice(null);
     try {
-      await operation();
+      const result = await operation();
       await load();
-      if (success) setNotice(success);
+      const next = typeof result === "string" || isNotice(result) ? result : success;
+      if (next) setNotice(next);
     } catch (err) {
       setError(message(err));
     } finally {
@@ -196,7 +206,7 @@ export function App() {
     setError(null);
     try {
       const preview = await previewProfile(profileId, projectPath);
-      if (preview.needsOwnershipConfirmation || preview.drifted) {
+      if (preview.drifted) {
         setEditor({ type: "apply", preview, action, launch });
       } else {
         await performApply(preview, action, launch, false);
@@ -229,10 +239,61 @@ export function App() {
           confirmOwnership: true,
           force
         });
+        setEditor(null);
+        return appliedNotice(preview.profile, preview.projectPath, () => void prepareApply(preview.profile.id, "launch", launch));
       }
       setEditor(null);
-    }, action === "apply" ? "Profile applied." : undefined);
+    });
   };
+
+  const appliedNotice = (profile: Profile, path: string, onLaunch: () => void): Notice => {
+    const impact = profileImpact(profile, overview.capabilities);
+    return {
+      text: `Applied “${profile.name}” to ${baseName(path)}.` + (impact.launchOnly ? " Its MCP servers, plugins and skills load when you launch through Capsule." : ""),
+      action: { label: "Launch now", onClick: onLaunch }
+    };
+  };
+
+  /** Reapplies a profile to every project whose files are out of date with it; hand-edited projects are left alone. */
+  const reapplyProfile = async (profileId: string): Promise<Notice | undefined> => {
+    const fresh = await getProfileOverview();
+    const targets = fresh.assignments.filter((item) => item.profileId === profileId && item.state !== "applied");
+    if (!targets.length) return undefined;
+    let done = 0;
+    const skipped: string[] = [];
+    for (const target of targets) {
+      if (target.state === "drifted") { skipped.push(`${baseName(target.projectPath)} (edited outside Capsule)`); continue; }
+      try { await applyProfile(profileId, target.projectPath, { confirmOwnership: true }); done += 1; }
+      catch (err) { skipped.push(`${baseName(target.projectPath)} (${message(err)})`); }
+    }
+    return {
+      text: [done ? `Reapplied to ${done} ${done === 1 ? "project" : "projects"}.` : "", skipped.length ? `Skipped ${skipped.join(", ")} — open ${skipped.length === 1 ? "it" : "them"} in Projects to review.` : ""].filter(Boolean).join(" "),
+      tone: skipped.length ? "warn" : "success"
+    };
+  };
+
+  const saveProfile = (editorState: Extract<Editor, { type: "profile" }>, draft: ProfileDraftInput, after: { applyTo?: string; reapply: boolean }) => void run(async () => {
+    const saved = editorState.item ? await updateProfile(editorState.item.id, draft) : await createProfile(draft);
+    setEditor(null);
+    setSelectedProfileId(saved.id);
+    const parts = [editorState.item ? `Saved “${saved.name}”.` : `Created “${saved.name}”.`];
+    let tone: Notice["tone"] = "success";
+    if (after.applyTo) {
+      try {
+        await applyProfile(saved.id, after.applyTo, { confirmOwnership: true });
+        parts.push(`Applied to ${baseName(after.applyTo)}.`);
+      } catch (err) {
+        parts.push(`Could not apply it to ${baseName(after.applyTo)}: ${message(err)}`);
+        tone = "warn";
+      }
+    }
+    if (after.reapply) {
+      const result = await reapplyProfile(saved.id);
+      if (result) { parts.push(result.text); if (result.tone === "warn") tone = "warn"; }
+    }
+    const offerUse = !editorState.item && !after.applyTo;
+    return { text: parts.join(" "), tone, action: offerUse ? { label: "Use in a project", onClick: () => { setSelectedProfileId(saved.id); setView("projects"); } } : undefined };
+  });
 
   const editCapability = async (item: Capability) => {
     try {
@@ -295,9 +356,9 @@ export function App() {
               </>
             )}
             {view !== "health" && (
-              <button className="primaryBtn" onClick={() => openPrimaryEditor(view, setEditor)}>
-                {view === "projects" ? <Import size={16} /> : view === "backups" ? <Trash2 size={16} /> : <Plus size={16} />}
-                {view === "projects" ? "Import setup" : view === "profiles" ? "New profile" : view === "catalog" ? "New capability" : "Clean up"}
+              <button className="primaryBtn" onClick={() => openPrimaryEditor(view, setEditor, projectPath)}>
+                {view === "backups" ? <Trash2 size={16} /> : <Plus size={16} />}
+                {view === "projects" || view === "profiles" ? "New profile" : view === "catalog" ? "New capability" : "Clean up"}
               </button>
             )}
             {view === "health" && (
@@ -307,7 +368,7 @@ export function App() {
         </header>
 
         {error && <div className="alert error"><CircleAlert size={17} /><span>{error}</span><button aria-label="Dismiss" onClick={() => setError(null)}><X size={15} /></button></div>}
-        {notice && <div className="alert success"><Check size={17} /><span>{notice}</span><button aria-label="Dismiss" onClick={() => setNotice(null)}><X size={15} /></button></div>}
+        {notice && <div className={`alert ${notice.tone === "warn" ? "warn" : "success"}`}>{notice.tone === "warn" ? <TriangleAlert size={17} /> : <Check size={17} />}<span>{notice.text}</span>{notice.action && <button className="alertAction" onClick={() => { const action = notice.action!; setNotice(null); action.onClick(); }}>{notice.action.label}</button>}<button aria-label="Dismiss" onClick={() => setNotice(null)}><X size={15} /></button></div>}
 
         {view === "projects" && (
           <ProjectsView
@@ -316,11 +377,14 @@ export function App() {
             onProjectChange={setProjectPath}
             profiles={overview.profiles}
             assignments={overview.assignments}
-            assignment={assignment}
-            assignedProfile={assignedProfile}
             capabilities={overview.capabilities}
+            selectedProfileId={selectedProfileId}
+            onSelectProfile={setSelectedProfileId}
             busy={busy}
             onApply={prepareApply}
+            onNewProfile={() => setEditor({ type: "profile", applyTo: projectPath })}
+            onEditProfile={(item) => setEditor({ type: "profile", item })}
+            onImportSetup={() => setEditor({ type: "import" })}
             onOpenCatalog={() => setView("catalog")}
             onDeactivate={() => confirm({
               title: "Deactivate this profile?",
@@ -337,6 +401,9 @@ export function App() {
             capabilities={overview.capabilities}
             assignments={overview.assignments}
             onEdit={(item) => setEditor({ type: "profile", item })}
+            onCopy={(item) => setEditor({ type: "profile", startFrom: { mode: "copy", profileId: item.id } })}
+            onReapply={(item) => void run(async () => (await reapplyProfile(item.id)) ?? "Every project already matches this profile.")}
+            onUse={(item) => { setSelectedProfileId(item.id); setView("projects"); }}
             onDelete={(item) => confirm({
               title: `Delete “${item.name}”?`,
               body: "The profile is removed from Capsule. Catalog items stay in the catalog.",
@@ -412,14 +479,14 @@ export function App() {
       {editor?.type === "profile" && (
         <ProfileEditor
           item={editor.item}
+          startFrom={editor.startFrom}
+          applyTo={editor.applyTo}
           capabilities={overview.capabilities}
           profiles={overview.profiles}
+          assignments={overview.assignments}
+          onImportSetup={editor.item || !(editor.applyTo ?? projectPath) ? undefined : () => setEditor({ type: "import" })}
           onClose={() => setEditor(null)}
-          onSave={(draft) => void run(async () => {
-            if (editor.item) await updateProfile(editor.item.id, draft);
-            else await createProfile(draft);
-            setEditor(null);
-          }, "Profile saved.")}
+          onSave={(draft, after) => saveProfile(editor, draft, after)}
         />
       )}
       {editor?.type === "import" && (
@@ -429,10 +496,13 @@ export function App() {
           onCandidates={(candidates) => setEditor({ type: "import", candidates })}
           onClose={() => setEditor(null)}
           onImport={(ids, name) => void run(async () => {
-            await commitImport(ids, name);
+            const created = await commitImport(ids, name);
             setEditor(null);
-            setView("profiles");
-          }, "Configuration imported into the catalog.")}
+            setSelectedProfileId(created.id);
+            return view === "projects"
+              ? `Captured ${ids.length} items as “${created.name}”. Review it below and apply when ready.`
+              : { text: `Captured ${ids.length} items as “${created.name}”.`, action: { label: "Use in a project", onClick: () => setView("projects") } };
+          })}
         />
       )}
       {editor?.type === "folder-import" && (
@@ -514,96 +584,221 @@ export function App() {
   );
 }
 
+type ProjectFilter = "all" | "managed" | "attention";
+
 function ProjectsView(props: {
   projects: ProjectEntry[];
   projectPath: string;
   onProjectChange: (value: string) => void;
   profiles: Profile[];
   assignments: ProfileOverview["assignments"];
-  assignment?: ProfileOverview["assignments"][number];
-  assignedProfile?: Profile;
   capabilities: Capability[];
+  selectedProfileId: string;
+  onSelectProfile: (id: string) => void;
   busy: boolean;
   onApply: (profileId: string, action: "apply" | "launch", launch: LaunchOptions) => void;
+  onNewProfile: () => void;
+  onEditProfile: (profile: Profile) => void;
+  onImportSetup: () => void;
   onOpenCatalog: () => void;
   onDeactivate: () => void;
 }) {
-  const [selected, setSelected] = useState(props.assignment?.profileId ?? props.profiles[0]?.id ?? "");
-  const [target, setTarget] = useState<LaunchTarget>("claude");
-  const [yolo, setYolo] = useState(false);
-  useEffect(() => setSelected(props.assignment?.profileId ?? props.profiles[0]?.id ?? ""), [props.assignment?.profileId, props.profiles]);
-  const profile = props.profiles.find((item) => item.id === selected);
-  const inherited = useMemo(() => profile ? inheritedSources(profile, props.profiles) : new Map<string, string>(), [profile, props.profiles]);
-  const resolved = props.capabilities.filter((item) => effectiveIds(profile).includes(item.id));
-  const own = resolved.filter((item) => !inherited.has(item.id));
-  const fromParents = resolved.filter((item) => inherited.has(item.id));
-  const isVanilla = profile?.system === "vanilla";
-  const launch = { target, yolo: yolo && !isVanilla };
-  const state = props.assignment?.state;
-  const assignedHere = props.assignment?.profileId === selected;
-  const profileName = (id: string) => props.profiles.find((item) => item.id === id)?.name;
+  const hasOwnProfiles = props.profiles.some((profile) => !profile.system);
   return (
-    <div className="pageGrid projectsGrid">
-      <section className="workflowGuide">
-        <div><span>1</span><strong>Add capabilities</strong><small>Create MCPs, skills, hooks, and instructions in Catalog.</small></div>
-        <ChevronRight size={17} />
-        <div><span>2</span><strong>Build a profile</strong><small>Pick catalog items, or extend profiles you already have.</small></div>
-        <ChevronRight size={17} />
-        <div><span>3</span><strong>Apply or launch</strong><small>Reuse that profile in any project, with Claude Code or Codex.</small></div>
-        <button className="secondaryBtn small" onClick={props.onOpenCatalog}>Open Catalog</button>
-      </section>
-      <section className="panel projectPickerPanel">
-        <div className="panelHeader"><div><span className="eyebrow">Repository</span><h2>Choose a project</h2></div></div>
-        <label className="field"><span>Project directory</span><select value={props.projectPath} onChange={(event) => props.onProjectChange(event.target.value)}>
-          <option value="">Select a project</option>
-          {props.projects.map((project) => { const assigned = props.assignments.find((item) => item.projectPath === project.path); const name = assigned && profileName(assigned.profileId); return <option key={project.path} value={project.path}>{name ? `${project.name} · ${name}` : project.name}</option>; })}
-        </select></label>
-        <div className="pathBox"><FolderGit2 size={18} /><code title={props.projectPath}>{props.projectPath || "No project selected"}</code></div>
-        {props.assignment && state ? (
-          <div className={`assignmentStatus ${state}`}>
-            <span className="statusDot" />
-            <div><strong>{props.assignedProfile?.name ?? "Unknown profile"}</strong><small>{STATE_META[state].label}</small><p>{STATE_META[state].detail}</p></div>
-            {state !== "applied" && <button className="secondaryBtn small" disabled={props.busy} onClick={() => props.onApply(props.assignment!.profileId, "apply", launch)}><RotateCcw size={14} />Reapply</button>}
-          </div>
-        ) : <div className="emptyState compact">No profile is assigned to this project. Running Claude here uses your own setup untouched.</div>}
-      </section>
-
-      <section className="panel profileChooser">
-        <div className="panelHeader"><div><span className="eyebrow">Profile catalog</span><h2>Apply anywhere</h2><p>Profiles are global; the generated Claude files are project-local.</p></div></div>
-        <div className="profileOptions">
-          {props.profiles.map((item) => (
-            <button key={item.id} className={`profileOption ${selected === item.id ? "selected" : ""}`} onClick={() => setSelected(item.id)}>
-              <span className="profileGlyph">{item.system ? <Sparkles size={18} /> : <Settings2 size={18} />}</span>
-              <span><strong>{item.name}</strong><small>{item.description || profileSummary(item)}</small></span>
-              {selected === item.id && <Check size={17} />}
-            </button>
-          ))}
-        </div>
-        <div className="capabilityPreview">
-          <span>Resolved capabilities{resolved.length > 0 && ` · ${resolved.length}`}</span>
-          {resolved.length ? <>
-            {own.length > 0 && <div className="chips">{own.map((item) => <KindChip key={item.id} item={item} />)}</div>}
-            {fromParents.length > 0 && <div className="inheritedBlock"><small><GitBranch size={12} />Inherited from {[...new Set(fromParents.map((item) => inherited.get(item.id)!))].join(", ")}</small><div className="chips">{fromParents.map((item) => <KindChip key={item.id} item={item} inherited={inherited.get(item.id)} />)}</div></div>}
-          </> : <small>{isVanilla ? "Safe mode — Claude Code with every customization disabled" : "None — clean Claude Code"}</small>}
-        </div>
-        <div className="launchOptions">
-          <div className="segmented" role="radiogroup" aria-label="Launch with">
-            <button role="radio" aria-checked={target === "claude"} className={target === "claude" ? "active" : ""} onClick={() => setTarget("claude")}>Claude Code</button>
-            <button role="radio" aria-checked={target === "codex"} className={target === "codex" ? "active" : ""} onClick={() => setTarget("codex")}>Codex</button>
-          </div>
-          <label className={`inlineToggle ${isVanilla ? "disabled" : ""}`} title={isVanilla ? "Vanilla starts in safe mode, so permission prompts stay on." : undefined}>
-            <input type="checkbox" checked={yolo && !isVanilla} disabled={isVanilla} onChange={(event) => setYolo(event.target.checked)} />
-            <span><strong>Skip permission prompts</strong><small>{target === "codex" ? "Passes --dangerously-bypass-approvals-and-sandbox" : "Passes --dangerously-skip-permissions"}</small></span>
-          </label>
-        </div>
-        <div className="buttonRow">
-          {props.assignment && <button className="dangerBtn" onClick={props.onDeactivate}><Power size={16} />Deactivate</button>}
-          <button className="secondaryBtn" disabled={!selected || !props.projectPath || props.busy} onClick={() => props.onApply(selected, "apply", launch)}><Save size={16} />{assignedHere ? "Reapply" : "Apply"}</button>
-          <button className="primaryBtn" disabled={!selected || !props.projectPath || props.busy} onClick={() => props.onApply(selected, "launch", launch)}><Play size={16} />Launch {target === "codex" ? "Codex" : "Claude"}</button>
-        </div>
-      </section>
+    <div className="projectsLayout">
+      {!hasOwnProfiles && (
+        <section className="workflowGuide">
+          <div><span>1</span><strong>Add capabilities</strong><small>Create MCPs, skills, hooks, and instructions in Catalog.</small></div>
+          <ChevronRight size={17} />
+          <div><span>2</span><strong>Build a profile</strong><small>Pick catalog items, or extend profiles you already have.</small></div>
+          <ChevronRight size={17} />
+          <div><span>3</span><strong>Apply or launch</strong><small>Reuse that profile in any project, with Claude Code or Codex.</small></div>
+          <button className="secondaryBtn small" onClick={props.onOpenCatalog}>Open Catalog</button>
+        </section>
+      )}
+      <ProjectList {...props} />
+      {props.projectPath
+        ? <ProjectDetail {...props} key={props.projectPath} />
+        : <section className="panel"><div className="emptyState">Choose a project on the left to see and change its profile.</div></section>}
     </div>
   );
+}
+
+function ProjectList(props: {
+  projects: ProjectEntry[];
+  projectPath: string;
+  onProjectChange: (value: string) => void;
+  profiles: Profile[];
+  assignments: ProfileOverview["assignments"];
+}) {
+  const [query, setQuery] = useState("");
+  const [filter, setFilter] = useState<ProjectFilter>("all");
+  const [otherPath, setOtherPath] = useState("");
+  const assignmentFor = (path: string) => props.assignments.find((item) => item.projectPath === path);
+  const needle = query.trim().toLocaleLowerCase();
+  const visible = props.projects.filter((project) => {
+    const assignment = assignmentFor(project.path);
+    if (filter === "managed" && !assignment) return false;
+    if (filter === "attention" && (!assignment || assignment.state === "applied")) return false;
+    return !needle || [project.name, project.path].some((value) => value.toLocaleLowerCase().includes(needle));
+  });
+  const attention = props.assignments.filter((item) => item.state !== "applied").length;
+  const openOther = () => { const value = otherPath.trim(); if (value) { props.onProjectChange(value); setOtherPath(""); } };
+  return <section className="panel projectListPanel">
+    <div className="panelHeader"><div><span className="eyebrow">Repository</span><h2>Projects</h2></div></div>
+    <SearchBox value={query} onChange={setQuery} placeholder="Find a project…" />
+    <div className="miniTabs" role="tablist">
+      <button role="tab" aria-selected={filter === "all"} className={filter === "all" ? "active" : ""} onClick={() => setFilter("all")}>All <span>{props.projects.length}</span></button>
+      <button role="tab" aria-selected={filter === "managed"} className={filter === "managed" ? "active" : ""} onClick={() => setFilter("managed")}>With profile <span>{props.assignments.length}</span></button>
+      <button role="tab" aria-selected={filter === "attention"} className={filter === "attention" ? "active" : ""} disabled={!attention} onClick={() => setFilter("attention")}>Needs reapply <span>{attention}</span></button>
+    </div>
+    <div className="projectList">{visible.length ? visible.map((project) => {
+      const assignment = assignmentFor(project.path);
+      const profile = props.profiles.find((item) => item.id === assignment?.profileId);
+      return <button key={project.path} className={`projectRow ${project.path === props.projectPath ? "active" : ""}`} onClick={() => props.onProjectChange(project.path)} title={project.path}>
+        <FolderGit2 size={15} />
+        <span><strong>{project.name}</strong>{assignment ? <small className={`profilePill ${assignment.state}`}><span className="statusDot" />{profile?.name ?? "Unknown profile"}</small> : <small>Own setup</small>}</span>
+      </button>;
+    }) : <div className="emptyState compact">{needle ? "No project matches this search." : "No projects here."}</div>}</div>
+    <form className="otherFolder" onSubmit={(event) => { event.preventDefault(); openOther(); }}>
+      <input aria-label="Open another folder" value={otherPath} onChange={(event) => setOtherPath(event.target.value)} placeholder="Another folder: /path/to/project" />
+      <button className="secondaryBtn small" disabled={!otherPath.trim()}>Open</button>
+    </form>
+  </section>;
+}
+
+function ProjectDetail(props: {
+  projectPath: string;
+  profiles: Profile[];
+  assignments: ProfileOverview["assignments"];
+  capabilities: Capability[];
+  selectedProfileId: string;
+  onSelectProfile: (id: string) => void;
+  busy: boolean;
+  onApply: (profileId: string, action: "apply" | "launch", launch: LaunchOptions) => void;
+  onNewProfile: () => void;
+  onEditProfile: (profile: Profile) => void;
+  onImportSetup: () => void;
+  onDeactivate: () => void;
+}) {
+  const [query, setQuery] = useState("");
+  const [target, setTarget] = useState<LaunchTarget>("claude");
+  const [yolo, setYolo] = useState(false);
+  const [preview, setPreview] = useState<ApplyPreview | null>(null);
+  const [previewError, setPreviewError] = useState<string | null>(null);
+  const [showFiles, setShowFiles] = useState(false);
+  const [fileTab, setFileTab] = useState<"instructions" | "settings" | "mcp">("instructions");
+  const assignment = props.assignments.find((item) => item.projectPath === props.projectPath);
+  const current = props.profiles.find((item) => item.id === assignment?.profileId);
+  const profile = props.profiles.find((item) => item.id === props.selectedProfileId);
+  const usage = (id: string) => props.assignments.filter((item) => item.profileId === id).length;
+  const sorted = [...props.profiles].sort((a, b) =>
+    Number(b.id === current?.id) - Number(a.id === current?.id) || usage(b.id) - usage(a.id) || Number(Boolean(a.system)) - Number(Boolean(b.system)) || a.name.localeCompare(b.name));
+  const needle = query.trim().toLocaleLowerCase();
+  const visible = sorted.filter((item) => !needle || [item.name, item.description].filter(Boolean).some((value) => value!.toLocaleLowerCase().includes(needle)));
+  const isVanilla = profile?.system === "vanilla";
+  const launch = { target, yolo: yolo && !isVanilla };
+  const isCurrent = Boolean(profile && profile.id === current?.id);
+  const name = props.projectPath.split(/[\\/]/).filter(Boolean).pop() ?? props.projectPath;
+  // Keyed on what changes the compiled output, so the preview follows profile edits and reapplies.
+  const previewKey = `${props.selectedProfileId}|${profile?.updatedAt}|${assignment?.updatedAt}|${assignment?.state}`;
+  useEffect(() => {
+    if (!profile) { setPreview(null); return; }
+    let live = true;
+    setPreviewError(null);
+    void previewProfile(profile.id, props.projectPath).then(
+      (result) => { if (live) setPreview(result); },
+      (err) => { if (live) { setPreview(null); setPreviewError(message(err)); } }
+    );
+    return () => { live = false; };
+  }, [previewKey, props.projectPath]);
+  const impact = profile ? profileImpact(profile, props.capabilities) : undefined;
+  const actionLabel = isCurrent ? (assignment?.state === "applied" ? "Reapply" : "Reapply now") : current ? `Switch to ${profile?.name ?? "profile"}` : "Apply";
+  return <div className="projectDetail">
+    <section className="panel projectHeaderPanel">
+      <div className="projectTitle">
+        <span className="largeGlyph"><FolderGit2 /></span>
+        <div><h2>{name}</h2><code title={props.projectPath}>{props.projectPath}</code></div>
+      </div>
+      {assignment ? <div className={`assignmentStatus ${assignment.state}`}>
+        <span className="statusDot" />
+        <div><strong>{current?.name ?? "Unknown profile"}</strong><small>{STATE_META[assignment.state].label}</small><p>{STATE_META[assignment.state].detail}</p></div>
+        <div className="rowButtons">
+          {assignment.state !== "applied" && current && <button className="secondaryBtn small" disabled={props.busy} onClick={() => props.onApply(current.id, "apply", launch)}><RotateCcw size={14} />Reapply</button>}
+          <button className="dangerBtn small" onClick={props.onDeactivate}><Power size={14} />Deactivate</button>
+        </div>
+      </div> : <div className="assignmentStatus none">
+        <span className="statusDot unknown" />
+        <div><strong>No profile</strong><p>Claude runs here with your own setup. Pick a profile below, or capture this project’s current setup as a new one.</p></div>
+        <button className="secondaryBtn small" onClick={props.onImportSetup}><Import size={14} />Capture current setup</button>
+      </div>}
+    </section>
+
+    <section className="panel profilePickerPanel">
+      <div className="panelHeader"><div><span className="eyebrow">Step 1</span><h2>Choose a profile</h2></div>{props.profiles.length > 6 && <SearchBox value={query} onChange={setQuery} placeholder="Filter profiles…" />}</div>
+      <div className="profilePickList" role="radiogroup" aria-label="Profiles">
+        {visible.map((item) => {
+          const count = usage(item.id);
+          return <button key={item.id} role="radio" aria-checked={item.id === props.selectedProfileId} className={`profilePick ${item.id === props.selectedProfileId ? "selected" : ""}`} onClick={() => props.onSelectProfile(item.id)}>
+            <span className="radioDot" />
+            <span><strong>{item.name}{item.id === current?.id && <em>Current</em>}</strong><small>{item.description || profileSummary(item)}</small></span>
+            <small className="pickMeta">{item.system ? "Safe mode" : `${effectiveIds(item).length} ${effectiveIds(item).length === 1 ? "item" : "items"}${count ? ` · ${count} ${count === 1 ? "project" : "projects"}` : ""}`}</small>
+          </button>;
+        })}
+        <button className="profilePick create" onClick={props.onNewProfile}><Plus size={15} /><span><strong>New profile for {name}</strong><small>Build one from the catalog and apply it here when you save.</small></span></button>
+      </div>
+    </section>
+
+    {profile && impact && <section className="panel">
+      <div className="panelHeader"><div><span className="eyebrow">Step 2</span><h2>Review {profile.name}</h2></div>{!profile.system && <button className="secondaryBtn small" onClick={() => props.onEditProfile(profile)}><Settings2 size={14} />Edit profile</button>}</div>
+      {isVanilla ? <div className="impactGrid single"><div><ShieldCheck size={16} /><span><strong>Safe mode</strong><small>Launch starts with every user customization disabled. Applying only marks the project; nothing of yours is loaded.</small></span></div></div> : <div className="impactGrid">
+        <div><FileText size={16} /><span><strong>Written to the project on apply</strong><small>{impact.instructions || impact.hooks ? <>{impact.instructions} {impact.instructions === 1 ? "instruction" : "instructions"} → <code>CLAUDE.local.md</code> · {impact.hooks} {impact.hooks === 1 ? "hook" : "hooks"} → <code>.claude/settings.local.json</code></> : <>Only a profile header in <code>CLAUDE.local.md</code> and an empty <code>.claude/settings.local.json</code>.</>}</small></span></div>
+        <div><Play size={16} /><span><strong>Loaded when launched through Capsule</strong><small>{impact.launchOnly ? `${[impact.mcp && `${impact.mcp} MCP`, impact.plugins && `${impact.plugins} ${impact.plugins === 1 ? "plugin" : "plugins"}`, impact.skills && `${impact.skills} ${impact.skills === 1 ? "skill" : "skills"}`].filter(Boolean).join(" · ")}. Plain claude in this folder does not load these — use Launch below or run cx.` : "Nothing extra — plain claude gets the whole profile."}</small></span></div>
+      </div>}
+      <ResolvedCapabilities profile={profile} profiles={props.profiles} capabilities={props.capabilities} />
+      {preview?.needsOwnershipConfirmation && <div className="inlineNote warn"><ShieldCheck size={14} /><span>This project already has its own <code>CLAUDE.local.md</code> or <code>.claude/settings.local.json</code>. Capsule keeps them as originals and puts them back when you deactivate.</span></div>}
+      {preview?.drifted && <div className="inlineNote danger"><TriangleAlert size={14} /><span>The generated files were edited by hand. Applying replaces those edits; Capsule backs them up first.</span></div>}
+      {preview && preview.warnings.length > 0 && <ul className="warningList">{preview.warnings.map((warning) => <li key={warning}>{warning}</li>)}</ul>}
+      {previewError && <div className="alert error"><CircleAlert size={17} /><span>{previewError}</span></div>}
+      {preview && <div className="filePreview">
+        <button className="linkBtn" aria-expanded={showFiles} onClick={() => setShowFiles((value) => !value)}><ChevronRight size={14} className={showFiles ? "rotated" : ""} />{showFiles ? "Hide generated files" : "Show generated files"}</button>
+        {showFiles && <>
+          <div className="segmented small">{([["instructions", "CLAUDE.local.md"], ["settings", "settings.local.json"], ["mcp", "MCP (launch only)"]] as const).map(([key, label]) => <button key={key} className={fileTab === key ? "active" : ""} onClick={() => setFileTab(key)}>{label}</button>)}</div>
+          <pre className="codePreview">{preview.outputs[fileTab]}</pre>
+        </>}
+      </div>}
+    </section>}
+
+    {profile && <section className="panel actionPanel">
+      <div className="launchOptions">
+        <div className="segmented" role="radiogroup" aria-label="Launch with">
+          <button role="radio" aria-checked={target === "claude"} className={target === "claude" ? "active" : ""} onClick={() => setTarget("claude")}>Claude Code</button>
+          <button role="radio" aria-checked={target === "codex"} className={target === "codex" ? "active" : ""} onClick={() => setTarget("codex")}>Codex</button>
+        </div>
+        <label className={`inlineToggle ${isVanilla ? "disabled" : ""}`} title={isVanilla ? "Vanilla starts in safe mode, so permission prompts stay on." : undefined}>
+          <input type="checkbox" checked={yolo && !isVanilla} disabled={isVanilla} onChange={(event) => setYolo(event.target.checked)} />
+          <span><strong>Skip permission prompts</strong><small>{target === "codex" ? "--dangerously-bypass-approvals-and-sandbox" : "--dangerously-skip-permissions"}</small></span>
+        </label>
+      </div>
+      <div className="buttonRow">
+        <button className="secondaryBtn" disabled={props.busy || !preview} title="Write the profile’s files into this project" onClick={() => props.onApply(profile.id, "apply", launch)}><Save size={16} />{actionLabel}</button>
+        <button className="primaryBtn" disabled={props.busy || !preview} title="Apply if needed, then open a terminal" onClick={() => props.onApply(profile.id, "launch", launch)}><Play size={16} />{isCurrent ? "" : "Apply and "}Launch {target === "codex" ? "Codex" : "Claude"}</button>
+      </div>
+    </section>}
+  </div>;
+}
+
+function ResolvedCapabilities(props: { profile: Profile; profiles: Profile[]; capabilities: Capability[] }) {
+  const inherited = inheritedSources(props.profile, props.profiles);
+  const resolved = props.capabilities.filter((item) => effectiveIds(props.profile).includes(item.id));
+  if (!resolved.length) return null;
+  const own = resolved.filter((item) => !inherited.has(item.id));
+  const parents = [...new Set(resolved.filter((item) => inherited.has(item.id)).map((item) => inherited.get(item.id)!))];
+  return <div className="capabilityPreview">
+    <span>Resolved capabilities · {resolved.length}</span>
+    {own.length > 0 && <div className="chips">{own.map((item) => <KindChip key={item.id} item={item} />)}</div>}
+    {parents.map((parent) => <div className="inheritedBlock" key={parent}><small><GitBranch size={12} />From {parent}</small><div className="chips">{resolved.filter((item) => inherited.get(item.id) === parent).map((item) => <KindChip key={item.id} item={item} inherited={parent} />)}</div></div>)}
+  </div>;
 }
 
 function ProfilesView(props: {
@@ -611,6 +806,9 @@ function ProfilesView(props: {
   capabilities: Capability[];
   assignments: ProfileOverview["assignments"];
   onEdit: (item: Profile) => void;
+  onCopy: (item: Profile) => void;
+  onReapply: (item: Profile) => void;
+  onUse: (item: Profile) => void;
   onDelete: (item: Profile) => void;
 }) {
   return <div className="cardGrid">{props.profiles.map((profile) => {
@@ -627,6 +825,7 @@ function ProfilesView(props: {
     return <article className="profileCard" key={profile.id}>
       <div className="cardTop"><span className={`largeGlyph ${profile.system ? "vanilla" : ""}`}>{profile.system ? <Sparkles /> : <Settings2 />}</span><div className="cardActions">
         {!profile.system && <button className="iconBtn" aria-label={`Edit ${profile.name}`} title="Edit" onClick={() => props.onEdit(profile)}><Settings2 size={15} /></button>}
+        {!profile.system && <button className="iconBtn" aria-label={`Copy ${profile.name}`} title="Copy into a new profile" onClick={() => props.onCopy(profile)}><Copy size={15} /></button>}
         {!profile.system && <button className="iconBtn danger" aria-label={`Delete ${profile.name}`} title={blocked ?? "Delete"} disabled={Boolean(blocked)} onClick={() => props.onDelete(profile)}><Trash2 size={15} /></button>}
       </div></div>
       <h3>{profile.name}</h3><p>{profile.description || (profile.system ? "Built in" : "No description")}</p>
@@ -635,9 +834,10 @@ function ProfilesView(props: {
         {children.length > 0 && <span><Blocks size={12} />Base for <strong>{children.map((child) => child.name).join(", ")}</strong></span>}
       </div>}
       <div className="chips">{items.slice(0, 5).map((item) => <KindChip key={item.id} item={item} inherited={profile.capabilityIds.includes(item.id) ? undefined : "parent"} />)}{items.length > 5 && <span className="moreChip">+{items.length - 5}</span>}</div>
+      {stale > 0 && <button className="reapplyBanner" onClick={() => props.onReapply(profile)}><RotateCcw size={13} />Reapply to {stale} {stale === 1 ? "project" : "projects"} that {stale === 1 ? "is" : "are"} out of date</button>}
       <footer>
         <span>{items.length} capabilities{items.length > ownCount && ` · ${items.length - ownCount} inherited`}</span>
-        <span className={stale ? "warnText" : ""}>{assigned.length} {assigned.length === 1 ? "project" : "projects"}{stale > 0 && ` · ${stale} need reapply`}</span>
+        <button className="linkBtn" onClick={() => props.onUse(profile)}>{assigned.length ? `${assigned.length} ${assigned.length === 1 ? "project" : "projects"}` : "Use in a project"}<ChevronRight size={12} /></button>
       </footer>
     </article>;
   })}</div>;
@@ -856,20 +1056,59 @@ function CapabilityEditor(props: { item?: Capability; initialKind?: CapabilityKi
   </Drawer>;
 }
 
-function ProfileEditor(props: { item?: Profile; capabilities: Capability[]; profiles: Profile[]; onClose: () => void; onSave: (draft: { name: string; description?: string; capabilityIds: string[]; extends: string[] }) => void }) {
-  const [name, setName] = useState(props.item?.name ?? "");
-  const [description, setDescription] = useState(props.item?.description ?? "");
-  const [selected, setSelected] = useState<string[]>(props.item?.capabilityIds ?? []);
-  const [parents, setParents] = useState<string[]>(props.item?.extends ?? []);
+type ProfileDraftInput = { name: string; description?: string; capabilityIds: string[]; extends: string[] };
+type StartMode = "blank" | "copy" | "extend";
+
+function ProfileEditor(props: {
+  item?: Profile;
+  startFrom?: { mode: "copy" | "extend"; profileId: string };
+  applyTo?: string;
+  capabilities: Capability[];
+  profiles: Profile[];
+  assignments: ProfileOverview["assignments"];
+  onImportSetup?: () => void;
+  onClose: () => void;
+  onSave: (draft: ProfileDraftInput, after: { applyTo?: string; reapply: boolean }) => void;
+}) {
+  const sourceOf = (id?: string) => props.profiles.find((profile) => profile.id === id);
+  const initialSource = sourceOf(props.startFrom?.profileId);
+  const [startMode, setStartMode] = useState<StartMode>(props.startFrom?.mode ?? "blank");
+  const [sourceId, setSourceId] = useState(initialSource?.id ?? props.profiles.find((profile) => !profile.system)?.id ?? "");
+  const [name, setName] = useState(props.item?.name ?? (props.startFrom?.mode === "copy" && initialSource ? `${initialSource.name} copy` : ""));
+  const [description, setDescription] = useState(props.item?.description ?? (props.startFrom?.mode === "copy" ? initialSource?.description ?? "" : ""));
+  const [selected, setSelected] = useState<string[]>(props.item?.capabilityIds ?? (props.startFrom?.mode === "copy" ? initialSource?.capabilityIds ?? [] : []));
+  const [parents, setParents] = useState<string[]>(props.item?.extends ?? (props.startFrom?.mode === "copy" ? initialSource?.extends ?? [] : props.startFrom?.mode === "extend" && initialSource ? [initialSource.id] : []));
+  const [applyAfter, setApplyAfter] = useState(Boolean(props.applyTo));
+  const usedBy = props.item ? props.assignments.filter((item) => item.profileId === props.item!.id) : [];
+  const [reapply, setReapply] = useState(usedBy.length > 0);
+  const [touchedName, setTouchedName] = useState(false);
+  const applyName = props.applyTo?.split(/[\\/]/).filter(Boolean).pop();
+
+  const startFrom = (mode: StartMode, id = sourceId) => {
+    const source = sourceOf(id);
+    setStartMode(mode);
+    setSourceId(id);
+    if (mode === "blank") { setSelected([]); setParents([]); return; }
+    if (!source) return;
+    if (mode === "copy") {
+      setSelected(source.capabilityIds); setParents(source.extends ?? []);
+      if (!touchedName || !name.trim()) setName(`${source.name} copy`);
+      if (!description.trim()) setDescription(source.description ?? "");
+    } else {
+      setSelected([]); setParents([source.id]);
+    }
+  };
+
   // System profiles cannot be extended, and a profile cannot extend itself or
   // anything that already extends it (the server rejects the cycle as well).
   const descendants = useMemo(() => props.item ? descendantIds(props.item.id, props.profiles) : new Set<string>(), [props.item, props.profiles]);
   const parentCandidates = props.profiles.filter((profile) => !profile.system && profile.id !== props.item?.id && !descendants.has(profile.id));
+  const sourceCandidates = props.profiles.filter((profile) => !profile.system);
   const toggleParent = (id: string) => setParents((values) => values.includes(id) ? values.filter((value) => value !== id) : [...values, id]);
   const inherited = useMemo(() => {
     const sources = new Map<string, string>();
     for (const id of parents) {
-      const parent = props.profiles.find((profile) => profile.id === id);
+      const parent = sourceOf(id);
       if (!parent) continue;
       for (const capabilityId of effectiveIds(parent)) if (!sources.has(capabilityId)) sources.set(capabilityId, parent.name);
     }
@@ -877,48 +1116,95 @@ function ProfileEditor(props: { item?: Profile; capabilities: Capability[]; prof
   }, [parents, props.profiles]);
   const [query, setQuery] = useState("");
   const [kindFilter, setKindFilter] = useState<CapabilityKind | "all">("all");
-  const [selectedOnly, setSelectedOnly] = useState(false);
   const toggle = (id: string) => setSelected((values) => values.includes(id) ? values.filter((value) => value !== id) : [...values, id]);
   const visible = useMemo(() => {
     const needle = query.trim().toLocaleLowerCase();
     return props.capabilities.filter((item) => {
       if (kindFilter !== "all" && item.kind !== kindFilter) return false;
-      if (selectedOnly && !selected.includes(item.id) && !inherited.has(item.id)) return false;
       if (!needle) return true;
       return [item.name, item.description, KIND_META[item.kind].label, item.kind]
         .filter(Boolean)
         .some((value) => value!.toLocaleLowerCase().includes(needle));
     });
-  }, [props.capabilities, kindFilter, query, selected, selectedOnly, inherited]);
+  }, [props.capabilities, kindFilter, query]);
   const kinds = (Object.keys(KIND_META) as CapabilityKind[]).filter((kind) => props.capabilities.some((item) => item.kind === kind));
-  const total = new Set([...selected, ...inherited.keys()]).size;
-  return <Drawer title={props.item ? "Edit profile" : "New profile"} onClose={props.onClose} wide>
-    <label className="field"><span>Name</span><input value={name} onChange={(e) => setName(e.target.value)} placeholder="Work" /></label>
-    <label className="field"><span>Description</span><input value={description} onChange={(e) => setDescription(e.target.value)} placeholder="What this profile is for" /></label>
-    {parentCandidates.length > 0 && <section className="profileCapabilityPicker">
-      <div className="profileCapabilityHeader"><div><strong>Extends</strong><small>Inherit every capability of these profiles, including what they inherit · {parents.length} selected</small></div></div>
+  const ownItems = props.capabilities.filter((item) => selected.includes(item.id) && !inherited.has(item.id));
+  const inheritedItems = props.capabilities.filter((item) => inherited.has(item.id));
+  const total = ownItems.length + inheritedItems.length;
+  const duplicate = props.profiles.some((profile) => profile.id !== props.item?.id && profile.name.toLocaleLowerCase() === name.trim().toLocaleLowerCase());
+  const nameError = !name.trim() ? (touchedName ? "Give the profile a name." : null) : duplicate ? `A profile named “${name.trim()}” already exists.` : null;
+  const canSave = Boolean(name.trim()) && !duplicate;
+  const stale = usedBy.filter((item) => item.state !== "drifted").length;
+  const saveLabel = props.item
+    ? (reapply && usedBy.length ? "Save and reapply" : "Save changes")
+    : (applyAfter && props.applyTo ? `Create and apply` : "Create profile");
+  const save = () => {
+    setTouchedName(true);
+    if (!canSave) return;
+    // Dropping own entries the parents already provide keeps the profile's own list honest.
+    const capabilityIds = selected.filter((id) => !inherited.has(id));
+    props.onSave({ name: name.trim(), description, capabilityIds, extends: parents }, { applyTo: applyAfter ? props.applyTo : undefined, reapply: Boolean(props.item) && reapply });
+  };
+
+  return <Drawer title={props.item ? `Edit ${props.item.name}` : applyName ? `New profile for ${applyName}` : "New profile"} onClose={props.onClose} wide="extra">
+    {!props.item && <section className="startFrom">
+      <span className="fieldLabel">Start from</span>
+      <div className="startOptions">
+        <button className={startMode === "blank" ? "active" : ""} onClick={() => startFrom("blank")}><Plus size={15} /><span><strong>Blank</strong><small>Pick everything yourself</small></span></button>
+        <button className={startMode === "extend" ? "active" : ""} disabled={!sourceCandidates.length} onClick={() => startFrom("extend")}><GitBranch size={15} /><span><strong>Extend a profile</strong><small>Inherit it, then add more</small></span></button>
+        <button className={startMode === "copy" ? "active" : ""} disabled={!sourceCandidates.length} onClick={() => startFrom("copy")}><Copy size={15} /><span><strong>Copy a profile</strong><small>Start from its exact setup</small></span></button>
+        {props.onImportSetup && <button onClick={props.onImportSetup}><Import size={15} /><span><strong>Capture {applyName ?? "a project"}’s setup</strong><small>Import what it uses today</small></span></button>}
+      </div>
+      {startMode !== "blank" && <label className="field inline"><span>{startMode === "copy" ? "Copy from" : "Extend"}</span><select value={sourceId} onChange={(event) => startFrom(startMode, event.target.value)}>{sourceCandidates.map((profile) => <option key={profile.id} value={profile.id}>{profile.name} · {effectiveIds(profile).length} items</option>)}</select></label>}
+    </section>}
+    <div className="nameRow">
+      <label className="field"><span>Name</span><input autoFocus={!props.item} value={name} onChange={(e) => { setName(e.target.value); setTouchedName(true); }} placeholder="e.g. Frontend work" aria-invalid={Boolean(nameError)} />{nameError && <small className="fieldError">{nameError}</small>}</label>
+      <label className="field"><span>Description</span><input value={description} onChange={(e) => setDescription(e.target.value)} placeholder="What this profile is for" /></label>
+    </div>
+    {parentCandidates.length > 0 && <section className="profileCapabilityPicker compactTop">
+      <div className="profileCapabilityHeader"><div><strong>Extends</strong><small>Inherit every capability of these profiles, including what they inherit</small></div></div>
       <div className="profileCapabilityFilters">{parentCandidates.map((profile) => <button key={profile.id} className={parents.includes(profile.id) ? "active" : ""} aria-pressed={parents.includes(profile.id)} onClick={() => toggleParent(profile.id)}><GitBranch size={11} />{profile.name}<span>{effectiveIds(profile).length}</span></button>)}</div>
     </section>}
-    <section className="profileCapabilityPicker">
-      <div className="profileCapabilityHeader"><div><strong>Capabilities</strong><small>{visible.length} of {props.capabilities.length} shown · {selected.length} own{inherited.size > 0 && ` · ${inherited.size} inherited`} · {total} total</small></div>{selected.length > 0 && <button onClick={() => setSelected([])}>Clear selection</button>}</div>
-      <div className="capabilitySearchRow"><label><Search size={15} /><input aria-label="Search capabilities" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search by name, type, or source…" />{query && <button aria-label="Clear search" onClick={() => setQuery("")}><X size={14} /></button>}</label><button className={selectedOnly ? "active" : ""} aria-pressed={selectedOnly} onClick={() => setSelectedOnly((value) => !value)}><Check size={14} />Selected only</button></div>
-      <div className="profileCapabilityFilters"><button className={kindFilter === "all" ? "active" : ""} onClick={() => setKindFilter("all")}>All <span>{props.capabilities.length}</span></button>{kinds.map((kind) => <button key={kind} className={kindFilter === kind ? "active" : ""} onClick={() => setKindFilter(kind)}>{KIND_META[kind].label}<span>{props.capabilities.filter((item) => item.kind === kind).length}</span></button>)}</div>
-      <div className="selectionList profileSelectionList">{visible.length ? visible.map((item) => {
-        const meta = KIND_META[item.kind]; const Icon = meta.icon;
-        const isSelected = selected.includes(item.id);
-        const via = inherited.get(item.id);
-        // Inherited items are locked on; one already listed as its own can still be dropped.
-        if (via && !isSelected) return <button className="selected inherited" key={item.id} disabled title={`Inherited from ${via}`}><span className={`kindIcon ${meta.color}`}><Icon size={16} /></span><span><strong>{item.name}</strong><small><span>{meta.label}</span> · inherited from {via}</small></span><span className="checkBox"><Lock size={12} /></span></button>;
-        return <button className={isSelected ? "selected" : ""} key={item.id} onClick={() => toggle(item.id)}><span className={`kindIcon ${meta.color}`}><Icon size={16} /></span><span><strong>{item.name}</strong><small><span>{meta.label}</span>{via ? <> · also inherited from {via}</> : item.description && <> · {item.description}</>}</small></span><span className="checkBox">{isSelected && <Check size={14} />}</span></button>;
-      }) : <div className="emptyState compact">No capabilities match these filters.</div>}</div>
-    </section>
-    <div className="drawerFooter"><button className="secondaryBtn" onClick={props.onClose}>Cancel</button><button className="primaryBtn" disabled={!name.trim()} onClick={() => props.onSave({ name, description, capabilityIds: selected, extends: parents })}><Save size={16} />Save profile</button></div>
+    <div className="composer">
+      <section className="profileCapabilityPicker">
+        <div className="profileCapabilityHeader"><div><strong>Catalog</strong><small>Click to add or remove · {visible.length} of {props.capabilities.length} shown</small></div></div>
+        <div className="capabilitySearchRow single"><label><Search size={15} /><input aria-label="Search capabilities" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search by name, type, or description…" />{query && <button aria-label="Clear search" onClick={() => setQuery("")}><X size={14} /></button>}</label></div>
+        <div className="profileCapabilityFilters"><button className={kindFilter === "all" ? "active" : ""} onClick={() => setKindFilter("all")}>All <span>{props.capabilities.length}</span></button>{kinds.map((kind) => <button key={kind} className={kindFilter === kind ? "active" : ""} onClick={() => setKindFilter(kind)}>{KIND_META[kind].label}<span>{props.capabilities.filter((item) => item.kind === kind).length}</span></button>)}</div>
+        <div className="selectionList profileSelectionList">{visible.length ? visible.map((item) => {
+          const meta = KIND_META[item.kind]; const Icon = meta.icon;
+          const via = inherited.get(item.id);
+          if (via) return <button className="selected inherited" key={item.id} disabled title={`Inherited from ${via}`}><span className={`kindIcon ${meta.color}`}><Icon size={16} /></span><span><strong>{item.name}</strong><small><span>{meta.label}</span> · from {via}</small></span><span className="checkBox"><Lock size={12} /></span></button>;
+          const isSelected = selected.includes(item.id);
+          return <button className={isSelected ? "selected" : ""} key={item.id} aria-pressed={isSelected} onClick={() => toggle(item.id)}><span className={`kindIcon ${meta.color}`}><Icon size={16} /></span><span><strong>{item.name}</strong><small><span>{meta.label}</span>{item.description && <> · {item.description}</>}</small></span><span className="checkBox">{isSelected && <Check size={14} />}</span></button>;
+        }) : <div className="emptyState compact">No capabilities match these filters.</div>}</div>
+      </section>
+      <section className="profileSummary" aria-label="In this profile">
+        <div className="profileCapabilityHeader"><div><strong>In this profile · {total}</strong><small>{ownItems.length} own{inheritedItems.length > 0 && ` · ${inheritedItems.length} inherited`}</small></div>{ownItems.length > 0 && <button onClick={() => setSelected([])}>Remove all</button>}</div>
+        {total === 0 ? <div className="emptyState compact">Nothing yet. Add items from the catalog, or extend a profile to start from its set.</div> : <div className="summaryGroups">
+          {(Object.keys(KIND_META) as CapabilityKind[]).filter((kind) => ownItems.some((item) => item.kind === kind)).map((kind) => <div className="summaryGroup" key={kind}>
+            <small>{KIND_META[kind].label}</small>
+            {ownItems.filter((item) => item.kind === kind).map((item) => <div className="summaryItem" key={item.id}><span>{item.name}</span><button aria-label={`Remove ${item.name}`} title="Remove" onClick={() => toggle(item.id)}><X size={13} /></button></div>)}
+          </div>)}
+          {parents.map((id) => sourceOf(id)).filter((parent): parent is Profile => Boolean(parent)).map((parent) => {
+            const fromParent = inheritedItems.filter((item) => inherited.get(item.id) === parent.name);
+            return fromParent.length ? <details className="summaryGroup inherited" key={parent.id} open={fromParent.length <= 6}><summary><GitBranch size={12} />From {parent.name} · {fromParent.length}</summary>{fromParent.map((item) => <div className="summaryItem" key={item.id}><span>{item.name}</span><Lock size={12} /></div>)}</details> : null;
+          })}
+        </div>}
+      </section>
+    </div>
+    <div className="drawerFooter spread">
+      <div className="footerOptions">
+        {props.applyTo && !props.item && <label className="inlineToggle"><input type="checkbox" checked={applyAfter} onChange={(event) => setApplyAfter(event.target.checked)} /><span><strong>Apply to {applyName} after creating</strong><small>Existing local files are kept as originals</small></span></label>}
+        {props.item && usedBy.length > 0 && <label className="inlineToggle"><input type="checkbox" checked={reapply} onChange={(event) => setReapply(event.target.checked)} /><span><strong>Reapply to {stale} {stale === 1 ? "project" : "projects"} using it</strong><small>{usedBy.length > stale ? `${usedBy.length - stale} edited outside Capsule ${usedBy.length - stale === 1 ? "is" : "are"} left for you to review` : "Their files update right after saving"}</small></span></label>}
+      </div>
+      <div className="buttonRow"><button className="secondaryBtn" onClick={props.onClose}>Cancel</button><button className="primaryBtn" disabled={!canSave && touchedName} onClick={save}><Save size={16} />{saveLabel}</button></div>
+    </div>
   </Drawer>;
 }
 
 function ImportEditor(props: { candidates?: ImportCandidate[]; projectPath: string; onCandidates: (items: ImportCandidate[]) => void; onClose: () => void; onImport: (ids: string[], name: string) => void }) {
   const [selected, setSelected] = useState<string[]>([]);
-  const [name, setName] = useState("Work");
+  const [name, setName] = useState(props.projectPath ? `${baseName(props.projectPath)} setup` : "Imported setup");
   useEffect(() => { if (!props.candidates) void scanImport(props.projectPath || undefined).then((items) => { props.onCandidates(items); setSelected(items.map((item) => item.id)); }); }, []);
   const items = props.candidates ?? [];
   return <Drawer title="Import current Claude setup" onClose={props.onClose} wide>
@@ -1076,7 +1362,7 @@ function useEscape(onClose: () => void) {
   }, [onClose]);
 }
 function closeOnBackdrop(onClose: () => void) { return (event: React.MouseEvent) => { if (event.target === event.currentTarget) onClose(); }; }
-function Drawer(props: { title: string; onClose: () => void; wide?: boolean; children: React.ReactNode }) { useEscape(props.onClose); return <div className="drawerBackdrop" onMouseDown={closeOnBackdrop(props.onClose)}><aside className={`profileDrawer ${props.wide ? "wide" : ""}`} role="dialog" aria-modal="true" aria-label={props.title}><header><div><span className="eyebrow">Capsule</span><h2>{props.title}</h2></div><button className="iconBtn" aria-label="Close" onClick={props.onClose}><X size={18} /></button></header><div className="drawerBody">{props.children}</div></aside></div>; }
+function Drawer(props: { title: string; onClose: () => void; wide?: boolean | "extra"; children: React.ReactNode }) { useEscape(props.onClose); return <div className="drawerBackdrop" onMouseDown={closeOnBackdrop(props.onClose)}><aside className={`profileDrawer ${props.wide === "extra" ? "wide extra" : props.wide ? "wide" : ""}`} role="dialog" aria-modal="true" aria-label={props.title}><header><div><span className="eyebrow">Capsule</span><h2>{props.title}</h2></div><button className="iconBtn" aria-label="Close" onClick={props.onClose}><X size={18} /></button></header><div className="drawerBody">{props.children}</div></aside></div>; }
 function NavButton(props: { active: boolean; icon: typeof Plug; onClick: () => void; badge?: { count: number; tone: "error" | "warn" }; children: React.ReactNode }) { const Icon = props.icon; return <button className={props.active ? "active" : ""} onClick={props.onClick}><Icon size={18} />{props.children}{props.badge && <span className={`navBadge ${props.badge.tone}`}>{props.badge.count}</span>}</button>; }
 function KindChip({ item, inherited }: { item: Capability; inherited?: string }) { const meta = KIND_META[item.kind]; const Icon = meta.icon; return <span className={`kindChip ${meta.color} ${inherited ? "inherited" : ""}`} title={inherited && inherited !== "parent" ? `Inherited from ${inherited}` : inherited ? "Inherited" : undefined}><Icon size={12} />{item.name}</span>; }
 function titleFor(view: View) { return ({ projects: "Project profiles", profiles: "Profile catalog", catalog: "Capability catalog", backups: "Backup history", health: "Setup health" } as const)[view]; }
@@ -1097,8 +1383,23 @@ function defaultScanFolder(projects: ProjectEntry[], projectPath: string): strin
   return sample ? sample.replace(/[\\/][^\\/]+[\\/]?$/, "") : "";
 }
 function message(error: unknown) { return error instanceof Error ? error.message : String(error); }
-function openPrimaryEditor(view: View, setEditor: (value: Editor | null) => void) { if (view === "profiles") setEditor({ type: "profile" }); else if (view === "catalog") setEditor({ type: "capability" }); else if (view === "projects") setEditor({ type: "import" }); else if (view === "backups") setEditor({ type: "prune" }); }
+function openPrimaryEditor(view: View, setEditor: (value: Editor | null) => void, projectPath: string) { if (view === "profiles") setEditor({ type: "profile" }); else if (view === "catalog") setEditor({ type: "capability" }); else if (view === "projects") setEditor({ type: "profile", applyTo: projectPath || undefined }); else if (view === "backups") setEditor({ type: "prune" }); }
 
+function baseName(path: string): string { return path.split(/[\\/]/).filter(Boolean).pop() ?? path; }
+function isNotice(value: unknown): value is Notice { return Boolean(value) && typeof value === "object" && typeof (value as Notice).text === "string"; }
+/** The most used profile of the user's own, so a fresh project starts on a sensible pick. */
+function defaultProfileId(overview: ProfileOverview): string {
+  const own = overview.profiles.filter((profile) => !profile.system);
+  const uses = (id: string) => overview.assignments.filter((item) => item.profileId === id).length;
+  return ([...own].sort((a, b) => uses(b.id) - uses(a.id))[0] ?? overview.profiles[0])?.id ?? "";
+}
+/** What applying a profile writes into the project, and what only a Capsule launch loads. */
+function profileImpact(profile: Profile, capabilities: Capability[]) {
+  const items = capabilities.filter((item) => effectiveIds(profile).includes(item.id));
+  const count = (...kinds: CapabilityKind[]) => items.filter((item) => kinds.includes(item.kind)).length;
+  const mcp = count("mcp"), plugins = count("installed-plugin", "custom-plugin"), skills = count("skill");
+  return { instructions: count("instruction"), hooks: count("hook"), mcp, plugins, skills, launchOnly: mcp + plugins + skills };
+}
 function effectiveIds(profile?: Profile): string[] { return profile ? profile.effectiveCapabilityIds ?? profile.capabilityIds : []; }
 function profileSummary(profile: Profile): string {
   const total = effectiveIds(profile).length;
@@ -1127,12 +1428,11 @@ function descendantIds(id: string, profiles: Profile[]): Set<string> {
   }
   return found;
 }
-/** Assigned projects can live outside the projects folder; list them too so they stay reachable. */
-function mergeProjects(projects: ProjectEntry[], assignments: ProfileOverview["assignments"]): ProjectEntry[] {
+/** Assigned projects and a folder opened by path can live outside the projects folder; list them too so they stay reachable. */
+function mergeProjects(projects: ProjectEntry[], assignments: ProfileOverview["assignments"], current: string): ProjectEntry[] {
   const known = new Set(projects.map((project) => project.path));
-  const extra = assignments
-    .filter((item) => !known.has(item.projectPath))
-    .map((item) => ({ name: item.projectPath.split(/[\\/]/).filter(Boolean).pop() ?? item.projectPath, path: item.projectPath }));
+  const paths = [...new Set([...assignments.map((item) => item.projectPath), current].filter((path) => path && !known.has(path)))];
+  const extra = paths.map((path) => ({ name: baseName(path), path }));
   return [...projects, ...extra.sort((a, b) => a.name.localeCompare(b.name))];
 }
 function isLinked(item: Capability): boolean { return (item.kind === "skill" || item.kind === "instruction") && Boolean(item.sourcePath); }
