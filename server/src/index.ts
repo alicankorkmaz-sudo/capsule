@@ -71,6 +71,7 @@ const CapabilityBodySchema = z
     rootPath: z.string().optional(),
     content: z.string().optional(),
     files: z.record(z.string()).optional(),
+    sourcePath: z.string().nullable().optional(),
     event: z.string().optional(),
     matcher: z.string().optional(),
     handlers: z.array(z.unknown()).optional()
@@ -245,6 +246,13 @@ export function buildServer(ctx: RuntimeContext = createRuntimeContext()): Fasti
     const params = z.object({ id: z.string() }).parse(request.params);
     await profiles.deleteCapability(params.id);
     return reply.code(204).send();
+  });
+
+  app.post("/api/catalog/sync", async (request) => {
+    const body = z
+      .object({ ids: z.array(z.string()).optional(), dryRun: z.boolean().optional() })
+      .parse(request.body ?? {});
+    return profiles.syncCapabilities(body.ids, { dryRun: body.dryRun });
   });
 
   app.post("/api/catalog/plugins/sync", async () => profiles.syncInstalledPlugins());

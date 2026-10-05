@@ -180,8 +180,18 @@ export function deduplicateCapabilities(store: ProfileStore): boolean {
   for (const capability of capabilities) {
     const fingerprint = capabilityFingerprint(capability);
     const survivor = survivorByFingerprint.get(fingerprint);
-    if (survivor) replacements.set(capability.id, survivor.id);
-    else survivorByFingerprint.set(fingerprint, capability);
+    if (survivor) {
+      replacements.set(capability.id, survivor.id);
+      // Keep the duplicate's source link so `caps catalog sync` still works.
+      if (
+        (survivor.kind === "skill" || survivor.kind === "instruction") &&
+        survivor.kind === capability.kind &&
+        !survivor.sourcePath &&
+        capability.sourcePath
+      ) {
+        survivor.sourcePath = capability.sourcePath;
+      }
+    } else survivorByFingerprint.set(fingerprint, capability);
   }
   if (!replacements.size) return false;
 

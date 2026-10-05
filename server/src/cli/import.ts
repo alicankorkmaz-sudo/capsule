@@ -12,6 +12,7 @@ export function registerImportCommands(program: Command, getDeps: () => CliDeps)
     .action(async () => {
       const deps = getDeps();
       const candidates = await deps.profiles.scanImport(deps.projectPath);
+      printWarnings(candidates, deps);
       printResult(candidates, deps.opts.json, deps.io, () => candidateTable(candidates));
     });
 
@@ -22,6 +23,7 @@ export function registerImportCommands(program: Command, getDeps: () => CliDeps)
     .action(async (folder: string, options: { global: boolean }) => {
       const deps = getDeps();
       const candidates = await deps.profiles.scanFolder(folder, options.global);
+      printWarnings(candidates, deps);
       printResult(candidates, deps.opts.json, deps.io, () => candidateTable(candidates));
     });
 
@@ -52,6 +54,8 @@ export function registerImportCommands(program: Command, getDeps: () => CliDeps)
             `Unknown candidate id${missing.length === 1 ? "" : "s"}: ${missing.join(", ")}. Run "caps import scan" to list candidates.`
           );
         }
+        const selected = new Set(candidateIds);
+        printWarnings(candidates.filter((candidate) => selected.has(candidate.id)), deps);
         await confirmOrAbort(
           `Import ${candidateIds.length} candidate${candidateIds.length === 1 ? "" : "s"} into the catalog?`,
           deps.opts.yes
@@ -69,6 +73,13 @@ export function registerImportCommands(program: Command, getDeps: () => CliDeps)
         );
       }
     );
+}
+
+/** Skipped skill files and similar read problems go to stderr, keeping --json output clean. */
+function printWarnings(candidates: ImportCandidate[], deps: CliDeps): void {
+  for (const candidate of candidates) {
+    for (const warning of candidate.warnings ?? []) deps.io.err(`Warning: ${warning}\n`);
+  }
 }
 
 function candidateTable(candidates: ImportCandidate[]): string {

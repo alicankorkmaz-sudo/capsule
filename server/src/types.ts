@@ -196,6 +196,8 @@ export interface SkillCapability extends CapabilityBase {
   kind: "skill";
   content: string;
   files?: Record<string, string>;
+  /** Skill directory (or single file) this snapshot was taken from; see `caps catalog sync`. */
+  sourcePath?: string;
 }
 
 export interface HookCapability extends CapabilityBase {
@@ -208,6 +210,8 @@ export interface HookCapability extends CapabilityBase {
 export interface InstructionCapability extends CapabilityBase {
   kind: "instruction";
   content: string;
+  /** Instruction file this snapshot was taken from; see `caps catalog sync`. */
+  sourcePath?: string;
 }
 
 export type Capability =

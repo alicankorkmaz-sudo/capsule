@@ -144,4 +144,35 @@ describe("API guard", () => {
     expect(overview.json().selectedAssignment.profileId).toBe(profile.id);
     await app.close();
   });
+
+  it("accepts skill files and source links, and syncs through the catalog API", async () => {
+    const env = await makeTempEnv();
+    const app = buildServer(env.ctx);
+    const headers = { "x-capsule": "1", origin: "http://127.0.0.1:5173" };
+    const skillDir = path.join(env.root, "review");
+    await fs.mkdir(skillDir, { recursive: true });
+    await fs.writeFile(path.join(skillDir, "SKILL.md"), "Review v2.\n");
+
+    const created = await app.inject({
+      method: "POST",
+      url: "/api/catalog",
+      headers,
+      payload: { kind: "skill", name: "review", content: "Review v1.\n", files: { "a.md": "A" }, sourcePath: skillDir }
+    });
+    expect(created.statusCode).toBe(200);
+    expect(created.json()).toMatchObject({ files: { "a.md": "A" }, sourcePath: skillDir });
+
+    const synced = await app.inject({ method: "POST", url: "/api/catalog/sync", headers, payload: { dryRun: true } });
+    expect(synced.statusCode).toBe(200);
+    expect(synced.json()[0]).toMatchObject({ status: "updated", changes: ["SKILL.md", "-a.md"] });
+
+    const unlinked = await app.inject({
+      method: "PATCH",
+      url: `/api/catalog/${created.json().id}`,
+      headers,
+      payload: { sourcePath: null }
+    });
+    expect(unlinked.json().sourcePath).toBeUndefined();
+    await app.close();
+  });
 });
