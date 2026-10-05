@@ -242,7 +242,10 @@ export class ProfileManager {
       return maskCapability(equivalent);
     }
     store.capabilities[id] = next;
-    markProfilesPending(store, id);
+    // Description- or source-link-only edits don't change what apply writes.
+    if (current.name !== next.name || capabilityFingerprint(current) !== capabilityFingerprint(next)) {
+      markProfilesPending(store, id);
+    }
     await writeProfileStore(this.ctx, store, `update ${next.kind} capability ${next.name}`);
     return maskCapability(next);
   }

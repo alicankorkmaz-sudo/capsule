@@ -214,6 +214,10 @@ describe("profile inheritance", () => {
     expect((await states())[child.id]).toBe("pending");
     const third = await manager.applyProfile(child.id, env.project);
     expect(third.appliedHash).not.toBe(second.appliedHash);
+
+    // A description-only edit doesn't change what apply writes.
+    await manager.updateCapability(logB.id, { description: "renamed in the catalog only" });
+    expect((await states())[child.id]).toBe("applied");
   });
 
   it("loads a store written before inheritance existed without changing it", async () => {
