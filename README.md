@@ -91,6 +91,28 @@ Global flags: `-C <path>` (project directory), `--json`, `-y`, `--elevated`.
 
 Run `caps <command> --help` for the full surface.
 
+### Profile inheritance
+
+A profile can extend other profiles, so capabilities shared by several profiles
+(say, two logging hooks) live in one place:
+
+```bash
+caps profiles create Logging -c log-tool-use log-session-end
+caps profiles create Work -c work-mcp --extends Logging
+caps profiles edit Work --add-extends Review     # also --remove-extends, --extends (replace), --no-extends
+caps profiles list                               # inherited capabilities are marked "^ … (from Logging)"
+```
+
+- The effective capability list is each parent's effective list (depth-first, in
+  `extends` order) followed by the profile's own capabilities; duplicates keep their
+  first position. Inheritance only adds — a child cannot drop a parent's capability.
+- Cycles and missing parents are rejected when editing and again when compiling.
+- Changing a parent marks every project using a descendant profile as pending, and
+  re-applying writes the new effective set.
+- A profile that others extend cannot be deleted; remove it from their `extends` first.
+- `vanilla` stays empty: it cannot be edited and cannot be extended.
+- `--json` output includes `extends` and `effectiveCapabilityIds`.
+
 ### Web UI
 
 ```bash
