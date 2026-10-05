@@ -260,6 +260,7 @@ export interface ProfileDraft {
   name: string;
   description?: string;
   capabilityIds?: string[];
+  extends?: string[];
 }
 
 async function apiGet<T>(url: string): Promise<T> {
