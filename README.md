@@ -179,6 +179,21 @@ npm run dev     # API on :8787, Vite dev server on :5173
 npm start       # built server on :8787, serves the built client
 ```
 
+The web UI covers the same ground as the CLI:
+
+- **Projects** — pick a project, see the capabilities its profile resolves to
+  (inherited ones marked with their source), reapply a profile that is pending or
+  drifted, and launch Claude Code or Codex, optionally skipping permission prompts.
+- **Profiles** — each card shows what the profile extends, which profiles build on
+  it, and how many projects need a reapply. A profile that is still extended or
+  assigned cannot be deleted.
+- **Catalog** — search, filter unused capabilities, and **Sync sources** to preview
+  and pull changes into skills and instructions linked to a source file.
+- **Backups** — totals, protected originals, a filter, and **Clean up**, which
+  previews `caps backups prune` before deleting anything.
+- **Health** — the `caps doctor` audit with a one-click link to each affected
+  profile or capability.
+
 ## Safety
 
 Applying a profile rewrites managed files, so Capsule backs up their prior contents
