@@ -80,7 +80,9 @@ const CapabilityBodySchema = z
 const ProfileBodySchema = z.object({
   name: z.string(),
   description: z.string().optional(),
-  capabilityIds: z.array(z.string()).optional()
+  capabilityIds: z.array(z.string()).optional(),
+  /** Parent profile ids; replaces the current list when present. */
+  extends: z.array(z.string()).optional()
 });
 
 const ApplyBodySchema = z.object({
