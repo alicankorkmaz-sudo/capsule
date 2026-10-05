@@ -742,7 +742,7 @@ async function checkBackups(ctx: RuntimeContext): Promise<DoctorIssue[]> {
       severity: "info",
       code: "backups",
       message: `${names.length} backup${names.length === 1 ? "" : "s"} using ${formatBytes(bytes)} in ${dir}.`,
-      hint: "List with caps backups list; old files there can be deleted by hand"
+      hint: "Trim with caps backups prune (keeps the newest 20 per file; --dry-run to preview)"
     }
   ];
 }
