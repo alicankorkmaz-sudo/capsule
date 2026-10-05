@@ -10,6 +10,7 @@ import type {
   RuntimeContext,
   SkillCapability
 } from "./types";
+import { effectiveCapabilityIds } from "./profileInheritance";
 import { customPluginsRoot, readProfileStore } from "./profileStorage";
 import { backupsDir, pathExists } from "./storage";
 
@@ -59,6 +60,7 @@ export async function runDoctor(ctx: RuntimeContext, options: DoctorOptions = {}
   issues.push(...(await checkHooks(audit)));
   issues.push(...(await checkSkillFiles(audit)));
   issues.push(...(await checkSkillCrossReferences(audit)));
+  issues.push(...checkExtends(audit));
   issues.push(...checkUnused(audit));
   issues.push(...(await checkBackups(ctx)));
 
@@ -83,8 +85,14 @@ class Audit {
     this.activeProfiles = Object.values(store.profiles).filter((profile) => profile.system !== "vanilla");
   }
 
+  /** Own plus inherited capabilities; broken `extends` edges are skipped here
+   *  and reported by checkExtends. */
+  effectiveIds(profile: Profile): string[] {
+    return effectiveCapabilityIds(this.store.profiles, profile.id, { strict: false });
+  }
+
   profilesUsing(capabilityId: string): Profile[] {
-    return this.activeProfiles.filter((profile) => profile.capabilityIds.includes(capabilityId));
+    return this.activeProfiles.filter((profile) => this.effectiveIds(profile).includes(capabilityId));
   }
 
   /** Projects assigned directly to one of the given profiles. */
@@ -114,6 +122,24 @@ class Audit {
 
 // ---------------------------------------------------------------------------
 // Store integrity
+
+function checkExtends(audit: Audit): DoctorIssue[] {
+  const issues: DoctorIssue[] = [];
+  for (const profile of audit.activeProfiles) {
+    try {
+      effectiveCapabilityIds(audit.store.profiles, profile.id, { strict: true });
+    } catch (error) {
+      issues.push({
+        severity: "error",
+        code: "profile-extends-invalid",
+        profileId: profile.id,
+        message: `Profile "${profile.name}" has a broken extends chain: ${error instanceof Error ? error.message : String(error)}`,
+        hint: `caps profiles edit ${shellArg(profile.name)} --remove-extends <profile>`
+      });
+    }
+  }
+  return issues;
+}
 
 function checkReferences(audit: Audit): DoctorIssue[] {
   const issues: DoctorIssue[] = [];
@@ -644,7 +670,8 @@ async function checkSkillCrossReferences(audit: Audit): Promise<DoctorIssue[]> {
   }
   const issues: DoctorIssue[] = [];
   for (const profile of audit.activeProfiles) {
-    const members = profile.capabilityIds
+    const members = audit
+      .effectiveIds(profile)
       .map((id) => audit.store.capabilities[id])
       .filter((item): item is Capability => Boolean(item));
     const profileSkills = new Set(
@@ -679,7 +706,7 @@ async function checkSkillCrossReferences(audit: Audit): Promise<DoctorIssue[]> {
 // 8. Housekeeping
 
 function checkUnused(audit: Audit): DoctorIssue[] {
-  const used = new Set(audit.activeProfiles.flatMap((profile) => profile.capabilityIds));
+  const used = new Set(audit.activeProfiles.flatMap((profile) => audit.effectiveIds(profile)));
   const unused = audit.capabilities
     .filter((item) => !used.has(item.id))
     .sort((left, right) => left.kind.localeCompare(right.kind) || left.name.localeCompare(right.name));

@@ -23,7 +23,7 @@ type CapabilitySeed = Omit<Capability, "createdAt" | "updatedAt"> & Record<strin
 
 interface Seed {
   capabilities?: CapabilitySeed[];
-  profiles?: Array<{ id: string; name?: string; capabilityIds: string[] }>;
+  profiles?: Array<{ id: string; name?: string; capabilityIds: string[]; extends?: string[] }>;
   assignments?: Array<{ projectPath: string; profileId: string; state?: ProjectAssignment["state"] }>;
 }
 
@@ -52,6 +52,7 @@ async function seedStore(env: TempEnv, seed: Seed): Promise<void> {
       id: profile.id,
       name: profile.name ?? profile.id,
       capabilityIds: profile.capabilityIds,
+      ...(profile.extends ? { extends: profile.extends } : {}),
       createdAt: NOW,
       updatedAt: NOW
     } satisfies Profile;
@@ -211,6 +212,24 @@ describe("doctor: assignments", () => {
   });
 });
 
+describe("doctor: profile inheritance", () => {
+  it("flags missing parents and cycles in extends", async () => {
+    const env = await makeTempEnv();
+    await seedStore(env, {
+      profiles: [
+        { id: "orphan", name: "Orphan", capabilityIds: [], extends: ["gone"] },
+        { id: "a", name: "A", capabilityIds: [], extends: ["b"] },
+        { id: "b", name: "B", capabilityIds: [], extends: ["a"] }
+      ]
+    });
+
+    const issues = byCode(await runDoctor(env.ctx, { env: {} }), "profile-extends-invalid");
+
+    expect(issues.map((issue) => issue.profileId).sort()).toEqual(["a", "b", "orphan"]);
+    expect(issues.every((issue) => issue.severity === "error")).toBe(true);
+  });
+});
+
 describe("doctor: hooks", () => {
   it("parses the program and script out of a hook command", () => {
     expect(parseHookCommand('"$CLAUDE_PROJECT_DIR"/bin/autosave.sh')).toEqual({
@@ -262,6 +281,35 @@ describe("doctor: hooks", () => {
       projectPath: desktop
     });
     expect(issues[0].message).toContain(path.join(desktop, "bin", "autosave.sh"));
+  });
+
+  it("checks hooks a profile inherits against projects assigned to the child", async () => {
+    const env = await makeTempEnv();
+    const desktop = path.join(env.root, "Desktop");
+    await fs.mkdir(desktop, { recursive: true });
+    await seedStore(env, {
+      capabilities: [
+        {
+          id: "autosave",
+          kind: "hook",
+          name: "autosave",
+          event: "SessionEnd",
+          handlers: [{ type: "command", command: '"$CLAUDE_PROJECT_DIR"/bin/autosave.sh' }]
+        }
+      ],
+      profiles: [
+        { id: "base", name: "Base", capabilityIds: ["autosave"] },
+        { id: "child", name: "Child", capabilityIds: [], extends: ["base"] }
+      ],
+      assignments: [{ projectPath: desktop, profileId: "child" }]
+    });
+
+    const issues = await runDoctor(env.ctx, { env: {} });
+
+    expect(byCode(issues, "hook-script-missing")).toMatchObject([
+      { severity: "warn", capabilityId: "autosave", profileId: "child", projectPath: desktop }
+    ]);
+    expect(byCode(issues, "unused-capabilities")).toHaveLength(0);
   });
 
   it("expands $HOME and checks bare commands on PATH", async () => {
