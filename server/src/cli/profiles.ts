@@ -9,7 +9,7 @@ export function registerProfileCommands(program: Command, getDeps: () => CliDeps
 
   profiles
     .command("list")
-    .description("List profiles with their capabilities")
+    .description("List profiles with their capabilities (inherited ones marked with ^)")
     .action(async () => {
       const deps = getDeps();
       const overview = await deps.profiles.getOverview(deps.projectPath);
@@ -23,16 +23,21 @@ export function registerProfileCommands(program: Command, getDeps: () => CliDeps
     .description("Create a profile")
     .option("-d, --description <text>", "profile description")
     .option("-c, --capability <id-or-name...>", "capabilities to enable")
-    .action(async (name: string, options: { description?: string; capability?: string[] }) => {
-      const deps = getDeps();
-      const capabilityIds = await resolveCapabilities(deps, options.capability);
-      const profile = await deps.profiles.createProfile({
-        name,
-        description: options.description,
-        capabilityIds
-      });
-      printResult(profile, deps.opts.json, deps.io, () => `Created profile "${profile.name}" (${profile.id}).\n`);
-    });
+    .option("-e, --extends <profile...>", "parent profiles (id or name) to inherit capabilities from")
+    .action(
+      async (name: string, options: { description?: string; capability?: string[]; extends?: string[] }) => {
+        const deps = getDeps();
+        const capabilityIds = await resolveCapabilities(deps, options.capability);
+        const parents = await resolveProfileIds(deps, options.extends);
+        const profile = await deps.profiles.createProfile({
+          name,
+          description: options.description,
+          capabilityIds,
+          extends: parents
+        });
+        printResult(profile, deps.opts.json, deps.io, () => `Created profile "${profile.name}" (${profile.id}).\n`);
+      }
+    );
 
   profiles
     .command("edit <profile>")
@@ -42,6 +47,10 @@ export function registerProfileCommands(program: Command, getDeps: () => CliDeps
     .option("-c, --capability <id-or-name...>", "replace the capability set")
     .option("--add <id-or-name...>", "add capabilities")
     .option("--remove <id-or-name...>", "remove capabilities")
+    .option("-e, --extends <profile...>", "replace the parent profiles (id or name)")
+    .option("--no-extends", "clear the parent profiles")
+    .option("--add-extends <profile...>", "add parent profiles")
+    .option("--remove-extends <profile...>", "remove parent profiles")
     .action(
       async (
         ref: string,
@@ -51,11 +60,18 @@ export function registerProfileCommands(program: Command, getDeps: () => CliDeps
           capability?: string[];
           add?: string[];
           remove?: string[];
+          /** Variadic list, or false for --no-extends. */
+          extends?: string[] | false;
+          addExtends?: string[];
+          removeExtends?: string[];
         }
       ) => {
         const deps = getDeps();
         if (options.capability && (options.add || options.remove)) {
           throw new Error("Use either --capability or --add/--remove, not both.");
+        }
+        if (options.extends !== undefined && (options.addExtends || options.removeExtends)) {
+          throw new Error("Use either --extends/--no-extends or --add-extends/--remove-extends, not both.");
         }
         const profile = await findProfile(deps, ref);
         let capabilityIds: string[] | undefined;
@@ -69,10 +85,33 @@ export function registerProfileCommands(program: Command, getDeps: () => CliDeps
             ...additions.filter((id) => !profile.capabilityIds.includes(id))
           ];
         }
+        let parents: string[] | undefined;
+        if (options.extends === false) {
+          parents = [];
+        } else if (options.extends) {
+          parents = await resolveProfileIds(deps, options.extends);
+        } else if (options.addExtends || options.removeExtends) {
+          const current = profile.extends ?? [];
+          const additions = (await resolveProfileIds(deps, options.addExtends)) ?? [];
+          // A parent id already listed is accepted verbatim, so a dangling
+          // reference in a hand-edited store can still be removed.
+          const removals = new Set(
+            (await resolveProfileIds(
+              deps,
+              options.removeExtends?.filter((entry) => !current.includes(entry))
+            )) ?? []
+          );
+          for (const entry of options.removeExtends ?? []) if (current.includes(entry)) removals.add(entry);
+          parents = [
+            ...current.filter((id) => !removals.has(id)),
+            ...additions.filter((id) => !current.includes(id))
+          ];
+        }
         const updated = await deps.profiles.updateProfile(profile.id, {
           name: options.name,
           description: options.description,
-          capabilityIds
+          capabilityIds,
+          extends: parents
         });
         printResult(updated, deps.opts.json, deps.io, () => `Updated profile "${updated.name}".\n`);
       }
@@ -177,6 +216,12 @@ export function registerProfileCommands(program: Command, getDeps: () => CliDeps
 async function findProfile(deps: CliDeps, ref: string) {
   const overview = await deps.profiles.getOverview(deps.projectPath);
   return resolveProfile(overview.profiles, ref);
+}
+
+async function resolveProfileIds(deps: CliDeps, refs?: string[]): Promise<string[] | undefined> {
+  if (!refs) return undefined;
+  const overview = await deps.profiles.getOverview(deps.projectPath);
+  return refs.map((ref) => resolveProfile(overview.profiles, ref).id);
 }
 
 async function resolveCapabilities(deps: CliDeps, refs?: string[]): Promise<string[] | undefined> {

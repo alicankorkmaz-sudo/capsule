@@ -3,6 +3,11 @@ import { spawn } from "node:child_process";
 import type { ProfileManager } from "../profileManager";
 import type { Capability, LaunchTarget, Profile } from "../types";
 import { askYesNo, defaultIO, type CliIO } from "./output";
+import {
+  profileParents,
+  resolveEffectiveCapabilities,
+  type EffectiveCapability
+} from "../profileInheritance";
 
 export interface LaunchOptions {
   /** Explicit profile override. Undefined means "no override" — use the
@@ -33,19 +38,32 @@ export function resolveProfile(profiles: Profile[], query: string): Profile {
 
 export function formatProfileList(profiles: Profile[], capabilities: Capability[]): string {
   const capabilityById = new Map(capabilities.map((capability) => [capability.id, capability]));
+  const profileById = new Map(profiles.map((profile) => [profile.id, profile]));
+  const profileName = (id: string) => profileById.get(id)?.name ?? `${id} (missing)`;
   const blocks = profiles.map((profile) => {
-    const enabled = profile.capabilityIds
-      .map((id) => capabilityById.get(id))
-      .filter((capability): capability is Capability => Boolean(capability));
+    const enabled = resolveEffectiveCapabilities(profileById, profile.id, { strict: false })
+      .map((entry) => ({ entry, capability: capabilityById.get(entry.capabilityId) }))
+      .filter((item): item is { entry: EffectiveCapability; capability: Capability } => Boolean(item.capability));
+    const inherited = enabled.filter((item) => item.entry.sourceProfileId !== profile.id).length;
     const lines = [
       `${profile.name}${profile.system === "vanilla" ? " (system)" : ""}`,
       `  ${profile.description ?? "No description."}`
     ];
+    const parents = profileParents(profile);
+    if (parents.length) lines.push(`  Extends: ${parents.map(profileName).join(", ")}`);
     if (!enabled.length) {
       lines.push("  Enabled capabilities: none");
     } else {
-      lines.push(`  Enabled capabilities (${enabled.length}):`);
-      lines.push(...enabled.map((capability) => `    - ${capability.name} [${capabilityKindLabel(capability)}]`));
+      const count = inherited ? `${enabled.length}, ${inherited} inherited` : `${enabled.length}`;
+      lines.push(`  Enabled capabilities (${count}):`);
+      lines.push(
+        ...enabled.map(({ entry, capability }) => {
+          const label = `${capability.name} [${capabilityKindLabel(capability)}]`;
+          return entry.sourceProfileId === profile.id
+            ? `    - ${label}`
+            : `    ^ ${label} (from ${profileName(entry.sourceProfileId)})`;
+        })
+      );
     }
     return lines.join("\n");
   });
