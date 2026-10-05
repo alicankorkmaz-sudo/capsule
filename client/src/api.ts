@@ -3,12 +3,16 @@ import type {
   BackupEntry,
   Capability,
   CapabilityKind,
+  CapabilitySyncResult,
+  DoctorIssue,
   ImportCandidate,
   LaunchResult,
+  LaunchTarget,
   Profile,
   ProfileOverview,
   ProjectAssignment,
   ProjectEntry,
+  PruneBackupsResult,
   ServerRecord,
   TargetKey,
   TargetStatus
@@ -132,6 +136,18 @@ export async function restoreBackupGroup(id: string, allowElevated?: boolean): P
   await apiJson(`/api/backup-groups/${encodeURIComponent(id)}/restore`, "POST", { allowElevated });
 }
 
+export async function pruneBackups(options: {
+  keep?: number;
+  olderThanDays?: number;
+  dryRun?: boolean;
+}): Promise<PruneBackupsResult> {
+  return apiJson("/api/backups/prune", "POST", options);
+}
+
+export async function getDoctor(): Promise<DoctorIssue[]> {
+  return apiGet("/api/doctor");
+}
+
 export async function validateConfig(config: unknown): Promise<void> {
   await apiJson("/api/validate", "POST", { config });
 }
@@ -154,6 +170,10 @@ export async function updateCapability(id: string, input: Partial<CapabilityDraf
 
 export async function removeCapability(id: string): Promise<void> {
   return apiJson(`/api/catalog/${encodeURIComponent(id)}`, "DELETE", {});
+}
+
+export async function syncCapabilities(ids?: string[], dryRun = false): Promise<CapabilitySyncResult[]> {
+  return apiJson("/api/catalog/sync", "POST", { ids, dryRun });
 }
 
 export async function syncInstalledPlugins(): Promise<Capability[]> {
@@ -218,7 +238,13 @@ export async function deactivateProfile(projectPath: string): Promise<void> {
 export async function launchProfile(
   profileId: string,
   projectPath: string,
-  options: { confirmOwnership?: boolean; force?: boolean; dryRun?: boolean } = {}
+  options: {
+    confirmOwnership?: boolean;
+    force?: boolean;
+    dryRun?: boolean;
+    target?: LaunchTarget;
+    yolo?: boolean;
+  } = {}
 ): Promise<LaunchResult> {
   return apiJson("/api/profile-launch", "POST", { profileId, projectPath, ...options });
 }

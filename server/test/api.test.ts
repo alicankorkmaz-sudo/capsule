@@ -175,4 +175,76 @@ describe("API guard", () => {
     expect(unlinked.json().sourcePath).toBeUndefined();
     await app.close();
   });
+
+  it("lists backups without contents, flags originals, and prunes over the API", async () => {
+    const env = await makeTempEnv();
+    const app = buildServer(env.ctx);
+    const headers = { "x-capsule": "1", origin: "http://127.0.0.1:5173" };
+    const apply = (profileId: string) =>
+      app.inject({
+        method: "POST",
+        url: "/api/profile-apply",
+        headers,
+        payload: { profileId, projectPath: env.project, confirmOwnership: true }
+      });
+    expect((await apply("personal")).statusCode).toBe(200);
+    expect((await apply("vanilla")).statusCode).toBe(200);
+    expect((await apply("personal")).statusCode).toBe(200);
+
+    const list = await app.inject({ method: "GET", url: "/api/backups" });
+    expect(list.statusCode).toBe(200);
+    const entries = list.json() as Array<Record<string, unknown>>;
+    expect(entries.length).toBeGreaterThan(2);
+    expect(entries.every((entry) => !("contentBase64" in entry) && typeof entry.bytes === "number")).toBe(true);
+    expect(entries.filter((entry) => entry.protected)).toHaveLength(2);
+
+    const preview = await app.inject({
+      method: "POST",
+      url: "/api/backups/prune",
+      headers,
+      payload: { keep: 0, dryRun: true }
+    });
+    expect(preview.statusCode).toBe(200);
+    expect(preview.json().dryRun).toBe(true);
+    expect(preview.json().protectedCount).toBe(2);
+    const wouldDelete = preview.json().deletedCount as number;
+    expect(wouldDelete).toBeGreaterThan(0);
+
+    const pruned = await app.inject({ method: "POST", url: "/api/backups/prune", headers, payload: { keep: 0 } });
+    expect(pruned.json().deletedCount).toBe(wouldDelete);
+    const after = (await app.inject({ method: "GET", url: "/api/backups" })).json() as Array<{ protected: boolean }>;
+    expect(after.every((entry) => entry.protected)).toBe(true);
+    await app.close();
+  });
+
+  it("passes the launch target and yolo through the launch API", async () => {
+    const env = await makeTempEnv();
+    const app = buildServer(env.ctx);
+    const headers = { "x-capsule": "1", origin: "http://127.0.0.1:5173" };
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/profile-launch",
+      headers,
+      payload: {
+        profileId: "personal",
+        projectPath: env.project,
+        confirmOwnership: true,
+        dryRun: true,
+        target: "codex",
+        yolo: true
+      }
+    });
+    expect(response.statusCode).toBe(200);
+    expect(response.json().args).toContain("--dangerously-bypass-approvals-and-sandbox");
+
+    const invalid = await app.inject({
+      method: "POST",
+      url: "/api/profile-launch",
+      headers,
+      payload: { profileId: "personal", projectPath: env.project, target: "emacs" }
+    });
+    expect(invalid.statusCode).toBeGreaterThanOrEqual(400);
+    await app.close();
+  });
 });
