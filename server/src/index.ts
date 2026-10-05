@@ -18,6 +18,7 @@ import {
   migrateLegacyAppDir
 } from "./paths";
 import { TargetKeySchema } from "./types";
+import { runDoctor } from "./doctor";
 import type { RuntimeContext } from "./types";
 import { CapabilityKindSchema } from "./types";
 import { ProfileManager } from "./profileManager";
@@ -222,6 +223,8 @@ export function buildServer(ctx: RuntimeContext = createRuntimeContext()): Fasti
     const query = z.object({ projectPath: z.string().optional() }).parse(request.query);
     return profiles.getOverview(query.projectPath);
   });
+
+  app.get("/api/doctor", async () => runDoctor(ctx));
 
   app.get("/api/catalog", async () => profiles.listCapabilities());
 

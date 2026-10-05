@@ -87,6 +87,7 @@ caps catalog sync           # refresh skills/instructions from their linked sour
 caps plugins sync           # pull installed Claude Code plugins into the catalog
 caps import scan            # find importable capabilities in existing configs
 caps backups list           # every backup Capsule has taken
+caps doctor                 # audit catalog, profiles and assignments
 ```
 
 Global flags: `-C <path>` (project directory), `--json`, `-y`, `--elevated`.
@@ -139,6 +140,37 @@ caps catalog edit review --source ~/.claude/skills/review
 updated capabilities mark the profiles using them pending re-apply. A missing source is
 only reported — sync never deletes a capability. It exits non-zero only when every
 requested capability failed to sync (missing source, or nothing linked).
+
+### Doctor
+
+`caps doctor` audits the catalog, profiles and assignments without writing
+anything. Each finding has a severity and a one-line fix hint; `--json` prints
+a list of `{severity, code, capabilityId?, profileId?, projectPath?, message, hint}`.
+It exits 1 if there is any error, otherwise 0 (also available as `GET /api/doctor`).
+
+| Code | Checks |
+| --- | --- |
+| `plugin-not-installed` | Installed-plugin capability missing from `~/.claude/plugins/installed_plugins.json` |
+| `mcp-command-missing` | Stdio MCP command: absolute path missing or not executable, or bare command not on `PATH` |
+| `assignment-path-missing`, `assignment-pending` | Assigned project directory is gone; profile changed since it was applied |
+| `hook-script-missing`, `hook-command-missing` | Hook command or script it runs is missing (`$HOME`/`~` expanded; `$CLAUDE_PROJECT_DIR` and relative paths checked in every project assigned to a profile using the hook) |
+| `skill-file-missing` | `SKILL.md` links to sibling files that the skill's `files` map does not contain |
+| `skill-ref-not-in-profile` | A skill invokes `/other-skill` (or "the `other-skill` skill") that is in the catalog but not in the same profile |
+| `custom-plugin-missing`, `custom-plugin-unmanaged` | Custom plugin root is missing or outside `~/.capsule/catalog/plugins` |
+| `profile-capability-missing`, `assignment-profile-missing`, `duplicate-mcp-name` | Dangling references that make a launch fail |
+| `unused-capabilities`, `backups` | Info: capabilities no profile uses; backup count and size |
+
+Errors are problems that break a launch. A broken capability that no profile
+uses is reported one level lower (error to warn, warn to info).
+
+The skill-file check is a heuristic and stays conservative. It ignores fenced
+code blocks. It counts markdown link targets, plus inline-code paths that start
+with `./` or a usual skill folder (`scripts/`, `references/`, `reference/`,
+`resources/`, `assets/`, `templates/`, `examples/`). It skips URLs, absolute
+paths, `..`, globs, placeholders, directories, paths under typical project
+folders (`docs/`, `src/`, `tests/`, `.claude/`, ...), and well-known project
+files (`CONTEXT.md`, `AGENTS.md`, `README.md`, `package.json`, ...). It also
+skips a file that exists in a project assigned to the skill's profile.
 
 ### Web UI
 

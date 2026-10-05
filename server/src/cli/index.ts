@@ -12,6 +12,7 @@ import { registerBackupCommands } from "./backups";
 import { registerProfileCommands } from "./profiles";
 import { registerCatalogCommands } from "./catalog";
 import { registerImportCommands } from "./import";
+import { registerDoctorCommands } from "./doctor";
 
 export interface RunCliOptions {
   ctx?: RuntimeContext;
@@ -49,6 +50,7 @@ export async function runCli(argv: string[], options: RunCliOptions = {}): Promi
   registerProfileCommands(program, getDeps);
   registerCatalogCommands(program, getDeps);
   registerImportCommands(program, getDeps);
+  registerDoctorCommands(program, getDeps);
 
   try {
     await program.parseAsync(argv, { from: "user" });
