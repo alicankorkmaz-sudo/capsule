@@ -12,6 +12,8 @@ import { labelForTarget, projectPathOrDefault, scopeForTarget } from "./paths";
 import {
   addDisabledEntry,
   listBackups,
+  pruneBackups,
+  type PruneBackupsOptions,
   readDisabledStore,
   removeDisabledEntryById,
   restoreBackup,
@@ -251,6 +253,10 @@ export class McpManager {
 
   async restoreBackupGroup(groupId: string, allowElevated = false) {
     await restoreBackupGroup(this.ctx, groupId, allowElevated);
+  }
+
+  async pruneBackups(options: PruneBackupsOptions = {}) {
+    return pruneBackups(this.ctx, options);
   }
 
   validateConfig(config: unknown) {
