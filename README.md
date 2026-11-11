@@ -234,9 +234,20 @@ commands without asking, so use it only where that blast radius is acceptable.
 It is rejected with the `vanilla` profile, whose whole point is safe mode.
 
 Codex reads MCP servers from `~/.codex/config.toml` (managed by `caps servers`)
-rather than from a compiled profile, so `cx -t codex` applies the profile's
-Claude-side files but warns that profile plugin directories are not passed to
-Codex.
+rather than from a compiled profile, so `cx -t codex` warns that profile plugin
+directories are not passed to Codex.
+
+### Instructions in Claude Code and Codex
+
+Applying a profile writes its instructions twice: to `CLAUDE.local.md` for
+Claude Code and to `AGENTS.override.md` for Codex. Codex reads instruction
+files literally, so `@path` imports are inlined into its copy (an import must
+stand alone on its line; re-apply to pick up changes in an imported file).
+Both agents then see the profile's instructions and not the project's own
+`CLAUDE.md` / `AGENTS.md`: a Capsule launch starts Claude Code with local
+settings only, and Codex reads `AGENTS.override.md` instead of `AGENTS.md`.
+Codex still loads its global `~/.codex/AGENTS.md`. Neither file is meant to be
+committed, so add both to `.gitignore`.
 
 If a managed file was edited outside Capsule, apply refuses until you pass `--force`,
 so hand edits are never silently clobbered.

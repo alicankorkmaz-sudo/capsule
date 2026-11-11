@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
@@ -516,5 +517,85 @@ describe("ProfileManager", () => {
     expect(launch.args).toContain("--safe-mode");
     const overview = await manager.getOverview(env.project);
     expect(overview.selectedAssignment?.profileId).toBe("vanilla");
+  });
+});
+
+describe("Codex instructions", () => {
+  it("writes the profile instructions to AGENTS.override.md with @imports inlined", async () => {
+    const env = await makeTempEnv();
+    const manager = new ProfileManager(env.ctx);
+    await fs.writeFile(path.join(env.home, "RULES.md"), "Use Conventional Commits.\n@nested.md\n");
+    await fs.writeFile(path.join(env.home, "nested.md"), "Reply briefly.\n");
+    const instruction = await manager.createCapability({
+      kind: "instruction",
+      name: "Global",
+      content: "@~/RULES.md\n\n```\n@~/nested.md\n```\n@missing.md"
+    });
+    const profile = await manager.createProfile({ name: "Codexy", capabilityIds: [instruction.id] });
+
+    const preview = await manager.previewApply(profile.id, env.project);
+    expect(preview.warnings.some((warning) => warning.includes("missing.md"))).toBe(true);
+    await manager.applyProfile(profile.id, env.project);
+
+    const claude = await fs.readFile(path.join(env.project, "CLAUDE.local.md"), "utf8");
+    const codex = await fs.readFile(path.join(env.project, "AGENTS.override.md"), "utf8");
+    expect(claude).toContain("@~/RULES.md");
+    expect(codex).toContain("# Profile: Codexy");
+    expect(codex).toContain("Use Conventional Commits.\nReply briefly.");
+    expect(codex).not.toContain("@~/RULES.md");
+    expect(codex).toContain("```\n@~/nested.md\n```");
+    expect(codex).toContain("@missing.md");
+  });
+
+  it("adopts an existing AGENTS.override.md and restores it on deactivate", async () => {
+    const env = await makeTempEnv();
+    const manager = new ProfileManager(env.ctx);
+    const file = path.join(env.project, "AGENTS.override.md");
+    await fs.writeFile(file, "mine\n");
+
+    expect((await manager.previewApply("personal", env.project)).needsOwnershipConfirmation).toBe(true);
+    await manager.applyProfile("personal", env.project, { confirmOwnership: true });
+    expect(await fs.readFile(file, "utf8")).toContain("# Profile:");
+
+    await fs.writeFile(file, "external edit\n");
+    expect((await manager.previewApply("personal", env.project)).drifted).toBe(true);
+
+    await manager.deactivate(env.project);
+    expect(await fs.readFile(file, "utf8")).toBe("mine\n");
+  });
+
+  it("removes AGENTS.override.md on deactivate when the project had none", async () => {
+    const env = await makeTempEnv();
+    const manager = new ProfileManager(env.ctx);
+    await manager.applyProfile("personal", env.project);
+    await manager.deactivate(env.project);
+    await expect(fs.access(path.join(env.project, "AGENTS.override.md"))).rejects.toThrow();
+  });
+
+  it("upgrades a project applied before Codex instructions without reporting drift", async () => {
+    const env = await makeTempEnv();
+    const manager = new ProfileManager(env.ctx);
+    await manager.applyProfile("personal", env.project);
+    // Rewind to what an older Capsule left behind: two originals, no Codex file.
+    const storePath = path.join(env.ctx.appDir, "profiles.json");
+    const store = await readJson<{ assignments: Record<string, Record<string, unknown>> }>(storePath);
+    const [key] = Object.keys(store.assignments);
+    const legacy = store.assignments[key];
+    delete legacy.codexInstructions;
+    legacy.originalBackupIds = (legacy.originalBackupIds as string[]).slice(0, 2);
+    const claudeFiles = [
+      await fs.readFile(path.join(env.project, ".claude", "settings.local.json"), "utf8"),
+      await fs.readFile(path.join(env.project, "CLAUDE.local.md"), "utf8")
+    ];
+    legacy.appliedHash = createHash("sha256").update(JSON.stringify(claudeFiles)).digest("hex");
+    await fs.writeFile(storePath, JSON.stringify(store));
+    await fs.rm(path.join(env.project, "AGENTS.override.md"));
+
+    expect((await manager.getOverview()).assignments[0].state).toBe("applied");
+    const assignment = await manager.applyProfile("personal", env.project);
+    expect(assignment.originalBackupIds).toHaveLength(3);
+    expect(assignment.codexInstructions).toBe(true);
+    await manager.deactivate(env.project);
+    await expect(fs.access(path.join(env.project, "AGENTS.override.md"))).rejects.toThrow();
   });
 });

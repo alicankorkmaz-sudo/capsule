@@ -196,7 +196,7 @@ describe("API guard", () => {
     const entries = list.json() as Array<Record<string, unknown>>;
     expect(entries.length).toBeGreaterThan(2);
     expect(entries.every((entry) => !("contentBase64" in entry) && typeof entry.bytes === "number")).toBe(true);
-    expect(entries.filter((entry) => entry.protected)).toHaveLength(2);
+    expect(entries.filter((entry) => entry.protected)).toHaveLength(3);
 
     const preview = await app.inject({
       method: "POST",
@@ -206,7 +206,7 @@ describe("API guard", () => {
     });
     expect(preview.statusCode).toBe(200);
     expect(preview.json().dryRun).toBe(true);
-    expect(preview.json().protectedCount).toBe(2);
+    expect(preview.json().protectedCount).toBe(3);
     const wouldDelete = preview.json().deletedCount as number;
     expect(wouldDelete).toBeGreaterThan(0);
 

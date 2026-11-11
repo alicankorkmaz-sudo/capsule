@@ -250,6 +250,8 @@ export interface ProjectAssignment {
   appliedHash?: string;
   state: AssignmentState;
   originalBackupIds?: string[];
+  /** True once apply also manages AGENTS.override.md for Codex. */
+  codexInstructions?: boolean;
   updatedAt: string;
 }
 
