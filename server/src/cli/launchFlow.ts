@@ -112,12 +112,12 @@ export async function runLaunch(
 
   if (preview.needsOwnershipConfirmation && !confirmOwnership) {
     confirmOwnership = await askYesNo(
-      "This project already has local Claude configuration. Back it up and let Capsule manage it?"
+      "This project already has local Claude or Codex configuration. Back it up and let Capsule manage it?"
     );
     if (!confirmOwnership) return 1;
   }
   if (preview.drifted && !force) {
-    force = await askYesNo("Managed Claude files changed outside Capsule. Overwrite those changes?");
+    force = await askYesNo("Managed Claude or Codex files changed outside Capsule. Overwrite those changes?");
     if (!force) return 1;
   }
 

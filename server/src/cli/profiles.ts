@@ -141,6 +141,7 @@ export function registerProfileCommands(program: Command, getDeps: () => CliDeps
           `Project: ${preview.projectPath}`,
           `Settings: ${preview.settingsPath}`,
           `Instructions: ${preview.instructionsPath}`,
+          `Codex instructions: ${preview.codexInstructionsPath}`,
           `Needs ownership confirmation: ${preview.needsOwnershipConfirmation ? "yes" : "no"}`,
           `Drifted: ${preview.drifted ? "yes" : "no"}`
         ];
@@ -159,13 +160,13 @@ export function registerProfileCommands(program: Command, getDeps: () => CliDeps
       const preview = await deps.profiles.previewApply(profile.id, deps.projectPath);
       if (preview.needsOwnershipConfirmation) {
         await confirmOrAbort(
-          "This project already has local Claude configuration. Back it up and let Capsule manage it?",
+          "This project already has local Claude or Codex configuration. Back it up and let Capsule manage it?",
           deps.opts.yes
         );
       }
       if (preview.drifted && !options.force) {
         await confirmOrAbort(
-          "Managed Claude files changed outside Capsule. Overwrite those changes?",
+          "Managed Claude or Codex files changed outside Capsule. Overwrite those changes?",
           deps.opts.yes
         );
       }

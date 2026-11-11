@@ -138,7 +138,7 @@ Options:
                         and --dangerously-bypass-approvals-and-sandbox to
                         Codex. Not allowed with the vanilla profile.
   -l, --list-profiles   List available profiles
-  -y, --yes             Confirm adoption of existing local Claude files
+  -y, --yes             Confirm adoption of existing local Claude and Codex files
   -f, --force           Overwrite drifted managed files
   -h, --help            Show this help
 

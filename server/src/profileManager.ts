@@ -36,6 +36,7 @@ import {
   writeProfileStore,
   writeWorkspaceFile
 } from "./profileStorage";
+import { CODEX_DOC_MAX_BYTES, expandInstructionImports } from "./codexInstructions";
 import {
   assertValidExtends,
   directChildren,
@@ -137,10 +138,12 @@ export interface ApplyPreview {
   profile: Profile;
   settingsPath: string;
   instructionsPath: string;
+  /** `AGENTS.override.md`: the same instructions, written for Codex. */
+  codexInstructionsPath: string;
   needsOwnershipConfirmation: boolean;
   drifted: boolean;
   warnings: string[];
-  outputs: { settings: string; instructions: string; mcp: string };
+  outputs: { settings: string; instructions: string; codexInstructions: string; mcp: string };
 }
 
 export interface ImportCandidate {
@@ -575,21 +578,39 @@ export class ProfileManager {
     const compiled = await this.compileProfile(profileId, resolvedProject);
     const settingsPath = projectSettingsPath(resolvedProject);
     const instructionsPath = projectInstructionsPath(resolvedProject);
+    const codexInstructionsPath = projectCodexInstructionsPath(resolvedProject);
     const store = await readProfileStore(this.ctx);
     const assignment = findAssignment(store, resolvedProject);
-    const drifted = assignment ? (await this.projectHash(resolvedProject)) !== assignment.appliedHash : false;
+    const drifted = assignment
+      ? (await this.projectHash(resolvedProject, assignment.codexInstructions)) !== assignment.appliedHash
+      : false;
+    // Codex reads instruction files literally, so `@path` imports that Claude
+    // would follow are inlined into the copy Codex gets.
+    const codex = await expandInstructionImports(compiled.instructions, resolvedProject, this.ctx.homeDir);
+    const warnings = [...compiled.warnings, ...codex.warnings];
+    if (Buffer.byteLength(codex.text, "utf8") > CODEX_DOC_MAX_BYTES) {
+      warnings.push(
+        `The profile's instructions exceed Codex's default ${CODEX_DOC_MAX_BYTES / 1024} KiB project doc limit; ` +
+          "Codex will truncate them unless project_doc_max_bytes is raised."
+      );
+    }
     return {
       projectPath: resolvedProject,
       profile: compiled.profile,
       settingsPath,
       instructionsPath,
+      codexInstructionsPath,
       needsOwnershipConfirmation:
-        !assignment && ((await pathExists(settingsPath)) || (await pathExists(instructionsPath))),
+        !assignment &&
+        ((await pathExists(settingsPath)) ||
+          (await pathExists(instructionsPath)) ||
+          (await pathExists(codexInstructionsPath))),
       drifted,
-      warnings: compiled.warnings,
+      warnings,
       outputs: {
         settings: `${JSON.stringify(compiled.settings, null, 2)}\n`,
         instructions: compiled.instructions,
+        codexInstructions: codex.text,
         mcp: `${JSON.stringify(compiled.mcpConfig, null, 2)}\n`
       }
     };
@@ -603,10 +624,10 @@ export class ProfileManager {
     const resolvedProject = path.resolve(projectPath);
     const preview = await this.previewApply(profileId, resolvedProject);
     if (preview.needsOwnershipConfirmation && !options.confirmOwnership) {
-      throw new Error("Existing local Claude files require ownership confirmation before applying.");
+      throw new Error("Existing local Claude or Codex files require ownership confirmation before applying.");
     }
     if (preview.drifted && !options.force) {
-      throw new Error("Managed Claude files changed outside Capsule. Resolve drift before applying.");
+      throw new Error("Managed Claude or Codex files changed outside Capsule. Resolve drift before applying.");
     }
     const store = await readProfileStore(this.ctx);
     const previous = findAssignment(store, resolvedProject);
@@ -618,6 +639,13 @@ export class ProfileManager {
       (await backupFile(this.ctx, preview.settingsPath, `adopt ${resolvedProject}`, backupGroupId)).id,
       (await backupFile(this.ctx, preview.instructionsPath, `adopt ${resolvedProject}`, backupGroupId)).id
     ];
+    // Projects applied before Capsule wrote Codex instructions, and fresh
+    // ones alike: whatever sits at AGENTS.override.md now is the original.
+    if (!previous?.codexInstructions) {
+      originalBackupIds.push(
+        (await backupFile(this.ctx, preview.codexInstructionsPath, `adopt ${resolvedProject}`, backupGroupId)).id
+      );
+    }
 
     // Until the assignment below lands in profiles.json, nothing else marks
     // the originals as protected — pin them so the backups taken by the
@@ -636,6 +664,12 @@ export class ProfileManager {
           preview.outputs.instructions,
           `apply profile ${preview.profile.name}`
         );
+        await writeTextFileSafe(
+          this.ctx,
+          preview.codexInstructionsPath,
+          preview.outputs.codexInstructions,
+          `apply profile ${preview.profile.name}`
+        );
         await this.writeRuntime(resolvedProject, await this.compileProfile(profileId, resolvedProject));
       } catch (err) {
         await Promise.all(originalBackupIds.map((id) => restoreBackup(this.ctx, id).catch(() => undefined)));
@@ -645,9 +679,10 @@ export class ProfileManager {
       const assignment: ProjectAssignment = {
         projectPath: resolvedProject,
         profileId,
-        appliedHash: await this.projectHash(resolvedProject),
+        appliedHash: await this.projectHash(resolvedProject, true),
         state: "applied",
         originalBackupIds,
+        codexInstructions: true,
         updatedAt: new Date().toISOString()
       };
       store.assignments[assignmentKey(resolvedProject)] = assignment;
@@ -721,7 +756,8 @@ export class ProfileManager {
     if (target === "codex") {
       // Codex reads its MCP servers from config.toml, which the codex adapter
       // maintains; there is no per-invocation config flag to point it at the
-      // compiled profile the way Claude's --mcp-config does.
+      // compiled profile the way Claude's --mcp-config does. The profile's
+      // instructions reach it through the AGENTS.override.md that apply wrote.
       if (compiled.pluginDirs.length) {
         warnings.push("Codex does not support plugin directories; the profile's plugins were not applied.");
       }
@@ -1273,7 +1309,7 @@ export class ProfileManager {
   private async assignmentStatuses(store: ProfileStore): Promise<ProjectAssignment[]> {
     const result: ProjectAssignment[] = [];
     for (const assignment of Object.values(store.assignments)) {
-      const currentHash = await this.projectHash(assignment.projectPath);
+      const currentHash = await this.projectHash(assignment.projectPath, assignment.codexInstructions);
       result.push({
         ...assignment,
         state:
@@ -1287,10 +1323,17 @@ export class ProfileManager {
     return result.sort((left, right) => left.projectPath.localeCompare(right.projectPath));
   }
 
-  private async projectHash(projectPath: string): Promise<string> {
+  /**
+   * Fingerprint of the managed project files. `withCodex` is false for
+   * assignments applied before Capsule wrote AGENTS.override.md, so their
+   * stored hash still matches and they do not show up as drifted.
+   */
+  private async projectHash(projectPath: string, withCodex = false): Promise<string> {
     const settings = await readTextIfExists(projectSettingsPath(projectPath));
     const instructions = await readTextIfExists(projectInstructionsPath(projectPath));
-    return hash(JSON.stringify([settings ?? null, instructions ?? null]));
+    const parts = [settings ?? null, instructions ?? null];
+    if (withCodex) parts.push((await readTextIfExists(projectCodexInstructionsPath(projectPath))) ?? null);
+    return hash(JSON.stringify(parts));
   }
 
   private projectRuntimeDir(projectPath: string): string {
@@ -1638,6 +1681,11 @@ function projectSettingsPath(projectPath: string): string {
 
 function projectInstructionsPath(projectPath: string): string {
   return path.join(projectPath, "CLAUDE.local.md");
+}
+
+/** Codex reads this ahead of, and instead of, the project's own AGENTS.md. */
+function projectCodexInstructionsPath(projectPath: string): string {
+  return path.join(projectPath, "AGENTS.override.md");
 }
 
 function safeName(value: string): string {

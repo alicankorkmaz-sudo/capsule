@@ -112,6 +112,8 @@ export interface ProjectAssignment {
   appliedHash?: string;
   state: "pending" | "applied" | "drifted";
   originalBackupIds?: string[];
+  /** True once apply also manages AGENTS.override.md for Codex. */
+  codexInstructions?: boolean;
   updatedAt: string;
 }
 
@@ -127,10 +129,11 @@ export interface ApplyPreview {
   profile: Profile;
   settingsPath: string;
   instructionsPath: string;
+  codexInstructionsPath: string;
   needsOwnershipConfirmation: boolean;
   drifted: boolean;
   warnings: string[];
-  outputs: { settings: string; instructions: string; mcp: string };
+  outputs: { settings: string; instructions: string; codexInstructions: string; mcp: string };
 }
 
 export interface ImportCandidate {
